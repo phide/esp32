@@ -67,6 +67,7 @@ void setup() {
     Serial.println("Connecting to WiFi...");
   }
 
+  tft.fillScreen(TFT_BLACK);
   Serial.println("Connected to WiFi");
 
   tft.setCursor(0, 0);
