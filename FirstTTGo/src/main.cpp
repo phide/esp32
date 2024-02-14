@@ -45,7 +45,7 @@ void makeApiCall() {
       Serial.println("China AQI des Schadstoffs: " + String(aqicn_p1));
       tft.setCursor(0, 20);
       tft.setTextSize(3);
-      tft.println("AQI: " + String(aqius));
+      tft.println("AQI Wert: " + String(aqius));
     }
 
     http.end();
@@ -73,6 +73,7 @@ void setup() {
 
   Serial.println("Connected to WiFi");
 
+  tft.fillScreen(TFT_BLACK);
   tft.setCursor(0, 0);
   tft.println("Connected to WiFi");
 
