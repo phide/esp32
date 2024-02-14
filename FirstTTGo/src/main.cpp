@@ -35,9 +35,6 @@ void makeApiCall() {
       int aqius_p1 = p1["aqius"]; // AQI des Schadstoffs basierend auf US EPA-Standard
       int aqicn_p1 = p1["aqicn"]; // AQI des Schadstoffs basierend auf China MEP-Standard
 
-      // Sie können die Werte jetzt in Ihrem Code verwenden
-      // Beispiel: Serial.println("US AQI: " + String(aqius));
-      // Ausgabe der Werte auf der seriellen Konsole
       Serial.println("US AQI: " + String(aqius));
       Serial.println("China AQI: " + String(aqicn));
       Serial.println("Schadstoffkonzentration: " + String(conc));
@@ -53,7 +50,6 @@ void makeApiCall() {
 }
 
 void setup() {
-  //Serial.begin(115200);
   Serial.begin(9600);
   delay(4000);
   WiFi.begin(ssid, password);
@@ -73,7 +69,6 @@ void setup() {
 
   Serial.println("Connected to WiFi");
 
-  tft.fillScreen(TFT_BLACK);
   tft.setCursor(0, 0);
   tft.println("Connected to WiFi");
 
