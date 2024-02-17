@@ -41,6 +41,8 @@ void makeApiCall() {
       Serial.println("US AQI des Schadstoffs: " + String(aqius_p1));
       Serial.println("China AQI des Schadstoffs: " + String(aqicn_p1));
       tft.setCursor(0, 20);
+      //tft.setTextSize(2);
+      //tft.println("Schadstoffe: " + String(aqius));
       tft.setTextSize(3);
       tft.println("AQI Wert: " + String(aqius));
     }
@@ -60,18 +62,23 @@ void setup() {
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(1);
   tft.setCursor(0, 0);
-  tft.println("Connecting to WiFi " + String(ssid) + "...");
+  //tft.println("Connecting to WiFi " + String(ssid) + "...");
+  tft.println("W-lan " + String(ssid) + "wird verbunden");
+
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    Serial.println("Connecting to WiFi...");
+    //Serial.println("Connecting to WiFi...");
+    Serial.println("W-lan verbunden");
   }
 
   tft.fillScreen(TFT_BLACK);
-  Serial.println("Connected to WiFi");
+  //Serial.println("Connected to WiFi");
+Serial.println("W-lan verbunden");
 
   tft.setCursor(0, 0);
-  tft.println("Connected to WiFi");
+  //tft.println("Connected to WiFi");
+tft.println("W-lan verbunden");
 
   makeApiCall();
 }
@@ -88,5 +95,6 @@ void loop() {
   unsigned long remainingTime = interval - (currentMillis - previousMillis);
   tft.setCursor(0, 60);
   tft.setTextSize(1);
-  tft.println("Refresh: " + String(remainingTime / 1000) + " Sekunden");
+  //tft.println("Refresh: " + String(remainingTime / 1000) + " seconds");
+  tft.println("Wird aktualisiert in " + String(remainingTime / 1000) + " Sekunden");
 }
