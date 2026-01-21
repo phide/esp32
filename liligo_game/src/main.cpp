@@ -7,17 +7,42 @@ TFT_eSPI tft = TFT_eSPI();
 const uint8_t BUTTON_LEFT_PIN = 35;
 const uint8_t BUTTON_RIGHT_PIN = 0;
 
-const uint32_t FOCUS_MS = 25UL * 60UL * 1000UL;
-const uint32_t SHORT_BREAK_MS = 5UL * 60UL * 1000UL;
-const uint32_t LONG_BREAK_MS = 15UL * 60UL * 1000UL;
-
 const uint32_t DEBOUNCE_MS = 30;
 const uint32_t LONG_PRESS_MS = 2000;
+
+struct RgbColor {
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+};
+
+const RgbColor FOCUS_RGB = {40, 220, 120};
+const RgbColor SHORT_RGB = {60, 170, 255};
+const RgbColor LONG_RGB = {255, 150, 0};
+const RgbColor MUTED_RGB = {160, 160, 160};
+
+struct ModeConfig {
+  const char* label;
+  uint32_t focusMs;
+  uint32_t shortBreakMs;
+  uint32_t longBreakMs;
+};
+
+const ModeConfig MODES[] = {
+  {"25/5", 25UL * 60UL * 1000UL, 5UL * 60UL * 1000UL, 15UL * 60UL * 1000UL},
+  {"15/5", 15UL * 60UL * 1000UL, 5UL * 60UL * 1000UL, 15UL * 60UL * 1000UL}
+};
+const int MODE_COUNT = sizeof(MODES) / sizeof(MODES[0]);
 
 enum Phase {
   PHASE_FOCUS,
   PHASE_SHORT_BREAK,
   PHASE_LONG_BREAK
+};
+
+enum ScreenState {
+  SCREEN_START,
+  SCREEN_TIMER
 };
 
 enum ButtonEvent {
@@ -40,11 +65,14 @@ ButtonState leftButton = {BUTTON_LEFT_PIN, true, false, false, 0, 0, false};
 ButtonState rightButton = {BUTTON_RIGHT_PIN, true, false, false, 0, 0, false};
 
 Phase currentPhase = PHASE_FOCUS;
+ScreenState screenState = SCREEN_START;
 bool isRunning = false;
 uint32_t phaseStartMs = 0;
 uint32_t pausedElapsedMs = 0;
-uint32_t currentDurationMs = FOCUS_MS;
+uint32_t currentDurationMs = 0;
 int completedFocusSessions = 0;
+int selectedModeIndex = 0;
+int activeModeIndex = 0;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -55,15 +83,17 @@ uint32_t lastRemainingSeconds = 0xFFFFFFFFUL;
 Phase lastPhase = PHASE_FOCUS;
 bool lastRunning = false;
 int lastCompletedFocus = -1;
+int lastStartModeIndex = -1;
 
 uint32_t durationForPhase(Phase phase) {
+  const ModeConfig& mode = MODES[activeModeIndex];
   if (phase == PHASE_FOCUS) {
-    return FOCUS_MS;
+    return mode.focusMs;
   }
   if (phase == PHASE_SHORT_BREAK) {
-    return SHORT_BREAK_MS;
+    return mode.shortBreakMs;
   }
-  return LONG_BREAK_MS;
+  return mode.longBreakMs;
 }
 
 const char* labelForPhase(Phase phase) {
@@ -251,13 +281,13 @@ void drawCycleDots(uint16_t color) {
   }
 }
 
-void drawProgressBar(uint16_t color, uint32_t elapsedMs, uint32_t durationMs) {
+void drawProgressBar(uint16_t borderColor, uint16_t fillColor, uint32_t elapsedMs, uint32_t durationMs) {
   const int barX = 10;
   const int barY = tft.height() - 14;
   const int barW = tft.width() - 20;
   const int barH = 8;
 
-  tft.drawRect(barX, barY, barW, barH, color);
+  tft.drawRect(barX, barY, barW, barH, borderColor);
   if (durationMs == 0) {
     return;
   }
@@ -266,10 +296,82 @@ void drawProgressBar(uint16_t color, uint32_t elapsedMs, uint32_t durationMs) {
   if (fillW > (uint32_t)(barW - 2)) {
     fillW = barW - 2;
   }
-  tft.fillRect(barX + 1, barY + 1, (int)fillW, barH - 2, color);
+  tft.fillRect(barX + 1, barY + 1, (int)fillW, barH - 2, fillColor);
 }
 
-void render(bool force) {
+int currentRoundForDisplay() {
+  int round = completedFocusSessions;
+  if (currentPhase == PHASE_FOCUS) {
+    round += 1;
+  }
+  if (round < 1) {
+    round = 1;
+  }
+  if (round > 4) {
+    round = 4;
+  }
+  return round;
+}
+
+void drawRoundIndicator(uint16_t color) {
+  char roundStr[12];
+  int round = currentRoundForDisplay();
+  snprintf(roundStr, sizeof(roundStr), "RUNDE %d/4", round);
+
+  tft.setTextSize(1);
+  tft.setTextColor(color, TFT_BLACK);
+  int roundWidth = strlen(roundStr) * 6;
+  int roundX = (tft.width() - roundWidth) / 2;
+  tft.setCursor(roundX, 24);
+  tft.print(roundStr);
+}
+
+void renderStartScreen(bool force) {
+  if (!force && selectedModeIndex == lastStartModeIndex) {
+    return;
+  }
+
+  tft.fillScreen(TFT_BLACK);
+
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  const char* title = "POMODORO";
+  int titleWidth = strlen(title) * 6 * 2;
+  int titleX = (tft.width() - titleWidth) / 2;
+  tft.setCursor(titleX, 6);
+  tft.print(title);
+
+  tft.setTextSize(1);
+  tft.setTextColor(colorShort, TFT_BLACK);
+  const char* startLabel = "START";
+  int startWidth = strlen(startLabel) * 6;
+  int startX = tft.width() - startWidth - 6;
+  tft.setCursor(startX, 6);
+  tft.print(startLabel);
+
+  const char* modeLabel = MODES[selectedModeIndex].label;
+  const int modeTextSize = 6;
+  tft.setTextSize(modeTextSize);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  int modeWidth = strlen(modeLabel) * 6 * modeTextSize;
+  int modeHeight = 8 * modeTextSize;
+  int modeX = (tft.width() - modeWidth) / 2;
+  int modeY = (tft.height() - modeHeight) / 2;
+  tft.setCursor(modeX, modeY);
+  tft.print(modeLabel);
+
+  const char* modeHint = "MODUSWECHSEL";
+  tft.setTextSize(1);
+  tft.setTextColor(colorMuted, TFT_BLACK);
+  int hintWidth = strlen(modeHint) * 6;
+  int hintX = tft.width() - hintWidth - 6;
+  tft.setCursor(hintX, tft.height() - 18);
+  tft.print(modeHint);
+
+  lastStartModeIndex = selectedModeIndex;
+}
+
+void renderTimerScreen(bool force) {
   uint32_t elapsedMs = currentElapsedMs();
   uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
   uint32_t remainingSeconds = remainingMs / 1000;
@@ -294,15 +396,20 @@ void render(bool force) {
   tft.setCursor(labelX, 6);
   tft.print(phaseLabel);
 
+  drawRoundIndicator(phaseColor);
+
   char timeStr[6];
   uint32_t minutes = remainingSeconds / 60;
   uint32_t seconds = remainingSeconds % 60;
   snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
 
-  tft.setTextSize(4);
-  int timeWidth = strlen(timeStr) * 6 * 4;
+  const int timeTextSize = 4;
+  tft.setTextSize(timeTextSize);
+  int timeWidth = strlen(timeStr) * 6 * timeTextSize;
+  int timeHeight = 8 * timeTextSize;
   int timeX = (tft.width() - timeWidth) / 2;
-  tft.setCursor(timeX, 34);
+  int timeY = isRunning ? (tft.height() - timeHeight) / 2 : 34;
+  tft.setCursor(timeX, timeY);
   tft.print(timeStr);
 
   if (!isRunning) {
@@ -316,7 +423,7 @@ void render(bool force) {
   }
 
   drawCycleDots(phaseColor);
-  drawProgressBar(phaseColor, elapsedMs, currentDurationMs);
+  drawProgressBar(phaseColor, phaseColor, elapsedMs, currentDurationMs);
 
   lastRemainingSeconds = remainingSeconds;
   lastPhase = currentPhase;
@@ -331,21 +438,46 @@ void setup() {
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
 
-  colorFocus = tft.color565(40, 220, 120);
-  colorShort = tft.color565(60, 170, 255);
-  colorLong = tft.color565(255, 150, 0);
-  colorMuted = tft.color565(160, 160, 160);
+  colorFocus = tft.color565(FOCUS_RGB.r, FOCUS_RGB.g, FOCUS_RGB.b);
+  colorShort = tft.color565(SHORT_RGB.r, SHORT_RGB.g, SHORT_RGB.b);
+  colorLong = tft.color565(LONG_RGB.r, LONG_RGB.g, LONG_RGB.b);
+  colorMuted = tft.color565(MUTED_RGB.r, MUTED_RGB.g, MUTED_RGB.b);
 
   initButton(leftButton, false);
   initButton(rightButton, true);
 
   startPhase(PHASE_FOCUS, false);
-  render(true);
+  renderStartScreen(true);
 }
 
 void loop() {
   uint32_t nowMs = millis();
   bool needsRedraw = false;
+
+  if (screenState == SCREEN_START) {
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      activeModeIndex = selectedModeIndex;
+      completedFocusSessions = 0;
+      screenState = SCREEN_TIMER;
+      startPhase(PHASE_FOCUS, true);
+      lastRemainingSeconds = 0xFFFFFFFFUL;
+      lastPhase = currentPhase;
+      lastRunning = isRunning;
+      lastCompletedFocus = -1;
+      renderTimerScreen(true);
+      return;
+    }
+
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      selectedModeIndex = (selectedModeIndex + 1) % MODE_COUNT;
+      needsRedraw = true;
+    }
+
+    renderStartScreen(needsRedraw);
+    return;
+  }
 
   ButtonEvent leftEvent = updateButton(leftButton, nowMs);
   if (leftEvent == BUTTON_EVENT_SHORT) {
@@ -369,5 +501,5 @@ void loop() {
     needsRedraw = true;
   }
 
-  render(needsRedraw);
+  renderTimerScreen(needsRedraw);
 }
