@@ -376,27 +376,33 @@ void renderTimerScreen(bool force) {
   uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
   uint32_t remainingSeconds = remainingMs / 1000;
 
-  if (!force &&
-      remainingSeconds == lastRemainingSeconds &&
-      currentPhase == lastPhase &&
-      isRunning == lastRunning &&
-      completedFocusSessions == lastCompletedFocus) {
+  bool phaseChanged = currentPhase != lastPhase;
+  bool runningChanged = isRunning != lastRunning;
+  bool roundChanged = completedFocusSessions != lastCompletedFocus;
+  bool timeChanged = remainingSeconds != lastRemainingSeconds;
+
+  if (!force && !phaseChanged && !runningChanged && !roundChanged && !timeChanged) {
     return;
   }
 
-  tft.fillScreen(TFT_BLACK);
+  bool fullRedraw = force || phaseChanged || runningChanged || roundChanged;
+  if (fullRedraw) {
+    tft.fillScreen(TFT_BLACK);
+  }
 
   uint16_t phaseColor = colorForPhase(currentPhase);
   const char* phaseLabel = labelForPhase(currentPhase);
 
-  tft.setTextColor(phaseColor, TFT_BLACK);
-  tft.setTextSize(2);
-  int labelWidth = strlen(phaseLabel) * 6 * 2;
-  int labelX = (tft.width() - labelWidth) / 2;
-  tft.setCursor(labelX, 6);
-  tft.print(phaseLabel);
+  if (fullRedraw) {
+    tft.setTextColor(phaseColor, TFT_BLACK);
+    tft.setTextSize(2);
+    int labelWidth = strlen(phaseLabel) * 6 * 2;
+    int labelX = (tft.width() - labelWidth) / 2;
+    tft.setCursor(labelX, 6);
+    tft.print(phaseLabel);
 
-  drawRoundIndicator(phaseColor);
+    drawRoundIndicator(phaseColor);
+  }
 
   char timeStr[6];
   uint32_t minutes = remainingSeconds / 60;
@@ -404,26 +410,38 @@ void renderTimerScreen(bool force) {
   snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
 
   const int timeTextSize = 4;
+  const int timeBoxW = 5 * 6 * timeTextSize;
+  const int timeBoxH = 8 * timeTextSize;
   tft.setTextSize(timeTextSize);
   int timeWidth = strlen(timeStr) * 6 * timeTextSize;
-  int timeHeight = 8 * timeTextSize;
-  int timeX = (tft.width() - timeWidth) / 2;
-  int timeY = isRunning ? (tft.height() - timeHeight) / 2 : 34;
-  tft.setCursor(timeX, timeY);
-  tft.print(timeStr);
+  int timeBoxX = (tft.width() - timeBoxW) / 2;
+  int timeBoxY = isRunning ? (tft.height() - timeBoxH) / 2 : 34;
 
-  if (!isRunning) {
-    const char* pausedLabel = "PAUSIERT";
-    tft.setTextSize(2);
-    tft.setTextColor(colorMuted, TFT_BLACK);
-    int pausedWidth = strlen(pausedLabel) * 6 * 2;
-    int pausedX = (tft.width() - pausedWidth) / 2;
-    tft.setCursor(pausedX, 78);
-    tft.print(pausedLabel);
+  if (fullRedraw || timeChanged) {
+    tft.fillRect(timeBoxX, timeBoxY, timeBoxW, timeBoxH, TFT_BLACK);
+    int timeX = timeBoxX + (timeBoxW - timeWidth) / 2;
+    tft.setTextColor(phaseColor, TFT_BLACK);
+    tft.setCursor(timeX, timeBoxY);
+    tft.print(timeStr);
   }
 
-  drawCycleDots(phaseColor);
-  drawProgressBar(phaseColor, phaseColor, elapsedMs, currentDurationMs);
+  if (fullRedraw) {
+    if (!isRunning) {
+      const char* pausedLabel = "PAUSIERT";
+      tft.setTextSize(2);
+      tft.setTextColor(colorMuted, TFT_BLACK);
+      int pausedWidth = strlen(pausedLabel) * 6 * 2;
+      int pausedX = (tft.width() - pausedWidth) / 2;
+      tft.setCursor(pausedX, 78);
+      tft.print(pausedLabel);
+    }
+
+    drawCycleDots(phaseColor);
+  }
+
+  if (fullRedraw || timeChanged) {
+    drawProgressBar(phaseColor, phaseColor, elapsedMs, currentDurationMs);
+  }
 
   lastRemainingSeconds = remainingSeconds;
   lastPhase = currentPhase;
