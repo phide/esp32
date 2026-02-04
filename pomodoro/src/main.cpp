@@ -31,7 +31,10 @@ const char* PREFS_AP_SSID_KEY = "ap_ssid";
 const char* PREFS_AP_PASS_KEY = "ap_pass";
 const char* PREFS_NTP_SERVER_KEY = "ntp_server";
 const char* PREFS_DST_MODE_KEY = "dst_mode";
+const char* PREFS_MODES_KEY = "modes_json";
+const char* PREFS_WEB_PASS_KEY = "web_pass";
 const int MAX_WIFI_NETWORKS = 8;
+const int MAX_MODES = 8;
 const char* DEFAULT_AP_SSID = "Timer";
 
 struct RgbColor {
@@ -45,20 +48,15 @@ const RgbColor SHORT_RGB = {60, 170, 255};
 const RgbColor LONG_RGB = {255, 150, 0};
 const RgbColor MUTED_RGB = {160, 160, 160};
 
-struct ModeConfig {
-  const char* label;
-  uint32_t focusMs;
-  uint32_t shortBreakMs;
-  uint32_t longBreakMs;
+struct ModeEntry {
+  String label;
+  int focusMin;
+  int shortMin;
+  int longMin;
+  String focusColor;
+  String shortColor;
+  String longColor;
 };
-
-const ModeConfig MODES[] = {
-  {"25/10", 25UL * 60UL * 1000UL, 10UL * 60UL * 1000UL, 15UL * 60UL * 1000UL},
-  {"20/10", 20UL * 60UL * 1000UL, 10UL * 60UL * 1000UL, 15UL * 60UL * 1000UL},
-  {"25/5", 25UL * 60UL * 1000UL, 5UL * 60UL * 1000UL, 15UL * 60UL * 1000UL},
-  {"15/5", 15UL * 60UL * 1000UL, 5UL * 60UL * 1000UL, 15UL * 60UL * 1000UL}
-};
-const int MODE_COUNT = sizeof(MODES) / sizeof(MODES[0]);
 
 enum Phase {
   PHASE_FOCUS,
@@ -82,6 +80,8 @@ struct WifiEntry {
   String password;
 };
 
+struct ModeEntry;
+
 enum DstMode {
   DST_AUTO = 0,
   DST_STANDARD = 1,
@@ -99,6 +99,9 @@ void saveSelectedMode();
 void loadWifiConfig();
 void saveWifiConfig();
 uint32_t currentElapsedMs();
+void loadModesConfig();
+void saveModesConfig();
+String rgbToHex(const RgbColor& rgb);
 
 struct ButtonState {
   uint8_t pin;
@@ -142,10 +145,12 @@ bool lastWifiConnected = false;
 bool webServerStarted = false;
 
 std::vector<WifiEntry> wifiList;
+std::vector<ModeEntry> modes;
 String apSsid = DEFAULT_AP_SSID;
 String apPass = "";
 String ntpServer = DEFAULT_NTP_SERVER;
 int dstMode = DST_AUTO;
+String webPass = "";
 bool apActive = false;
 
 int wifiIndex = 0;
@@ -227,6 +232,17 @@ String currentIpLabel() {
   return "-";
 }
 
+bool ensureAuth() {
+  if (webPass.length() == 0) {
+    return true;
+  }
+  if (webServer.authenticate("admin", webPass.c_str())) {
+    return true;
+  }
+  webServer.requestAuthentication();
+  return false;
+}
+
 const char* tzForMode() {
   if (dstMode == DST_STANDARD) {
     return TZ_STANDARD;
@@ -258,6 +274,9 @@ void updateWifiAndTime(uint32_t nowMs) {
   if (!webServerStarted) {
     webServerStarted = true;
       webServer.on("/", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -274,9 +293,9 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
                 "box-shadow:0 10px 30px rgba(0,0,0,.25)}"
                 ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
-                ".grid{display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start;}"
+                ".grid{display:grid;grid-template-columns:1fr 280px;gap:14px;align-items:start;}"
                 ".panel{border:1px solid #223044;border-radius:12px;background:#111822;padding:12px}"
-                ".timerBox{font-size:36px;font-weight:700;letter-spacing:1px;text-align:center}"
+                ".timerBox{font-size:58px;font-weight:700;letter-spacing:1px;text-align:center}"
                 ".timerSub{font-size:12px;color:var(--muted);text-align:center;margin-top:4px}"
                 ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);}"
                 ".pill.ok{background:rgba(91,214,147,.15);color:var(--ok)}"
@@ -287,6 +306,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".btns{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:12px;}"
                 "a.btn{display:block;text-align:center;padding:10px 12px;border-radius:10px;"
                 "border:1px solid #2a3a54;background:#1d2736;color:var(--text);text-decoration:none;font-weight:600}"
+                "a.btn.disabled{opacity:.45;pointer-events:none}"
                 "a.btn.primary{background:var(--accent);border-color:#3f7ed1;color:#07111e}"
                 "a.btn.save,button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
                 ".modes{margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;}"
@@ -303,40 +323,57 @@ void updateWifiAndTime(uint32_t nowMs) {
     html += "' href='/wifi'>Wi-Fi: ";
         html += currentWifiLabel();
         html += "</a>";
-        html += "<div class='pill'>IP: ";
-        html += currentIpLabel();
-        html += "</div>";
+        html += "<a class='pill' href='/settings'>Settings</a>";
         html += "</div>";
         html += "<div class='row' style='margin-top:10px'>";
-        html += "<div class='stat'>Status</div><div class='big'>";
+        html += "<div class='stat'>Status</div><div class='big' id='statusText'>";
         html += (screenState == SCREEN_TIMER ? "Timer" : "Start");
         html += "</div>";
         html += "</div>";
         html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Phase</div><div class='big'>";
+        html += "<div class='stat'>Phase</div><div class='big' id='phaseText'>";
         html += labelForPhase(currentPhase);
         html += "</div>";
         html += "</div>";
         html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Running</div><div class='big'>";
+        html += "<div class='stat'>Running</div><div class='big' id='runningText'>";
         html += (isRunning ? "Yes" : "No");
         html += "</div>";
         html += "</div>";
         html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Mode</div><div class='big'>";
-        html += MODES[selectedModeIndex].label;
+        html += "<div class='stat'>Mode</div><div class='big' id='modeText'>";
+        if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
+          html += modes[selectedModeIndex].label;
+        }
         html += "</div>";
         html += "</div>";
+        bool timerActive = (screenState == SCREEN_TIMER);
         html += "<div class='btns'>";
         html += "<a class='btn primary' href='/start'>Start</a>";
-        html += "<a class='btn' href='/pause'>Pause/Resume</a>";
-        html += "<a class='btn' href='/next'>Next Phase</a>";
-        html += "<a class='btn' href='/reset'>Reset Phase</a>";
-        html += "<a class='btn' href='/home'>Start Menu</a>";
+        html += "<a class='btn";
+        html += (timerActive ? "" : " disabled");
+        html += "' href='";
+        html += (timerActive ? "/pause" : "#");
+        html += "'>Pause/Resume</a>";
+        html += "<a class='btn";
+        html += (timerActive ? "" : " disabled");
+        html += "' href='";
+        html += (timerActive ? "/next" : "#");
+        html += "'>Next Phase</a>";
+        html += "<a class='btn";
+        html += (timerActive ? "" : " disabled");
+        html += "' href='";
+        html += (timerActive ? "/reset" : "#");
+        html += "'>Reset Phase</a>";
+        html += "<a class='btn";
+        html += (timerActive ? "" : " disabled");
+        html += "' href='";
+        html += (timerActive ? "/home" : "#");
+        html += "'>Start Menu</a>";
         html += "</div>";
         html += "<div class='stat' style='margin-top:12px'>Set Mode</div>";
         html += "<div class='modes'>";
-        for (int i = 0; i < MODE_COUNT; i++) {
+        for (int i = 0; i < (int)modes.size(); i++) {
           html += "<a class='mode";
           if (i == selectedModeIndex) {
             html += " active";
@@ -344,7 +381,7 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "' href='/mode?i=";
           html += i;
           html += "'>";
-          html += MODES[i].label;
+          html += modes[i].label;
           html += "</a>";
         }
         html += "</div></div>";
@@ -356,15 +393,31 @@ void updateWifiAndTime(uint32_t nowMs) {
         uint32_t seconds = remainingSeconds % 60;
         char timeStr[6];
         snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
-        html += "<div class='timerBox'>";
+        html += "<div class='timerBox' id='timerText'>";
         html += timeStr;
         html += "</div>";
         html += "<div class='timerSub'>Remaining</div>";
-        html += "</div></div></div></body></html>";
+        html += "</div></div></div>";
+        html += "<script>"
+                "async function refreshStatus(){"
+                "try{const res=await fetch('/status?ts='+Date.now());"
+                "const s=await res.json();"
+                "document.getElementById('timerText').textContent=s.remaining;"
+                "document.getElementById('statusText').textContent=s.screen;"
+                "document.getElementById('phaseText').textContent=s.phase;"
+                "document.getElementById('runningText').textContent=s.running ? 'Yes':'No';"
+                "document.getElementById('modeText').textContent=s.mode;"
+                "}catch(e){}}"
+                "setInterval(refreshStatus,1000);"
+                "</script>";
+        html += "</body></html>";
         webServer.send(200, "text/html", html);
       });
 
       webServer.on("/start", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         activeModeIndex = selectedModeIndex;
         completedFocusSessions = 0;
         screenState = SCREEN_TIMER;
@@ -380,6 +433,14 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/pause", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        if (screenState != SCREEN_TIMER) {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         toggleRunning();
         renderTimerScreen(true);
         webServer.sendHeader("Location", "/");
@@ -387,6 +448,14 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/next", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        if (screenState != SCREEN_TIMER) {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         bool countFocusCompletion = (currentPhase == PHASE_FOCUS);
         advancePhase(countFocusCompletion, isRunning);
         renderTimerScreen(true);
@@ -395,6 +464,14 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/reset", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        if (screenState != SCREEN_TIMER) {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         resetCurrentPhase();
         renderTimerScreen(true);
         webServer.sendHeader("Location", "/");
@@ -402,6 +479,14 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/home", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        if (screenState != SCREEN_TIMER) {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         screenState = SCREEN_START;
         startPhase(PHASE_FOCUS, false);
         completedFocusSessions = 0;
@@ -416,9 +501,12 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/mode", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         if (webServer.hasArg("i")) {
           int idx = webServer.arg("i").toInt();
-          if (idx >= 0 && idx < MODE_COUNT) {
+          if (idx >= 0 && idx < (int)modes.size()) {
             selectedModeIndex = idx;
             saveSelectedMode();
             lastInputMs = millis();
@@ -431,12 +519,41 @@ void updateWifiAndTime(uint32_t nowMs) {
         webServer.send(303);
       });
 
+      webServer.on("/status", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        StaticJsonDocument<256> doc;
+        uint32_t elapsedMs = currentElapsedMs();
+        uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
+        uint32_t remainingSeconds = remainingMs / 1000;
+        uint32_t minutes = remainingSeconds / 60;
+        uint32_t seconds = remainingSeconds % 60;
+        char timeStr[6];
+        snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
+        doc["remaining"] = timeStr;
+        doc["screen"] = (screenState == SCREEN_TIMER ? "Timer" : "Start");
+        doc["phase"] = labelForPhase(currentPhase);
+        doc["running"] = isRunning;
+        if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
+          doc["mode"] = modes[selectedModeIndex].label;
+        } else {
+          doc["mode"] = "--";
+        }
+        String out;
+        serializeJson(doc, out);
+        webServer.send(200, "application/json", out);
+      });
+
       webServer.on("/wifi", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(6144);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>WLAN</title>"
+                "<title>Wi-Fi</title>"
                 "<style>"
                 ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
                 "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
@@ -465,7 +582,6 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<div class='title'>Wi-Fi</div>";
         html += "<div class='card'><div class='row'>";
         html += "<a class='pill' href='/'>Back</a>";
-        html += "<a class='pill' href='/time'>Time Settings</a>";
         html += "<div class='pill'>Active: ";
         html += currentWifiLabel();
         html += "</div>";
@@ -558,6 +674,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/scan", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         int n = WiFi.scanNetworks();
         StaticJsonDocument<1024> doc;
         JsonArray arr = doc.createNestedArray("networks");
@@ -574,6 +693,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/add", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String ssid = webServer.arg("ssid");
         String pass = webServer.arg("pass");
         ssid.trim();
@@ -600,6 +722,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/delete", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         int idx = webServer.arg("i").toInt();
         if (idx >= 0 && idx < (int)wifiList.size()) {
           wifiList.erase(wifiList.begin() + idx);
@@ -611,6 +736,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/order", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String order = webServer.arg("order");
         std::vector<WifiEntry> newList;
         int start = 0;
@@ -636,6 +764,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/ap", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String ssid = webServer.arg("ap_ssid");
         String pass = webServer.arg("ap_pass");
         ssid.trim();
@@ -650,7 +781,97 @@ void updateWifiAndTime(uint32_t nowMs) {
         webServer.send(303);
       });
 
+      webServer.on("/settings", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String html;
+        html.reserve(2048);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Settings</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:linear-gradient(160deg,#0b1118,#141d2a);"
+                "color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto;}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px;}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                "a.btn{display:inline-block;text-align:center;padding:10px 12px;border-radius:10px;"
+                "border:1px solid #2a3a54;background:#1d2736;color:var(--text);text-decoration:none;font-weight:600}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>Settings</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='btn' href='/'>Back</a>";
+        html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
+        html += "<a class='btn' href='/time'>Time</a>";
+        html += "<a class='btn' href='/ntp'>Time Sync</a>";
+        html += "<a class='btn' href='/password'>Password</a>";
+        html += "</div></div>";
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/password", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String html;
+        html.reserve(2048);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Password</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:linear-gradient(160deg,#0b1118,#141d2a);"
+                "color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto;}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px;}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                "button.btn{padding:8px 12px;border-radius:10px;border:1px solid #2a3a54;background:#1d2736;"
+                "color:var(--text);font-weight:600}"
+                "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+                "input{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
+                "padding:8px 10px;min-width:220px}"
+                ".muted{color:var(--muted);font-size:12px}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>Password</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='btn' href='/settings'>Back</a>";
+        html += "</div></div>";
+        html += "<div class='card'>";
+        html += "<form method='post' action='/password/save'>";
+        html += "<div class='row'><input name='web_pass' type='password' placeholder='Web Password (empty = open)'></div>";
+        html += "<div class='row' style='margin-top:12px'><button class='btn save' type='submit'>Save</button></div>";
+        html += "<div class='muted' style='margin-top:6px'>Empty password disables protection.</div>";
+        html += "</form></div>";
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/password/save", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String pass = webServer.arg("web_pass");
+        webPass = pass;
+        saveWifiConfig();
+        webServer.sendHeader("Location", "/password");
+        webServer.send(303);
+      });
+
       webServer.on("/time", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -673,11 +894,193 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
                 "input,select{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
                 "padding:8px 10px;min-width:220px}"
+                "input[type=range]{min-width:260px;accent-color:#59d98e}"
+                "input[type=color]{appearance:none;width:36px;height:28px;padding:0;border:1px solid #2a3a54;"
+                "border-radius:6px;background:#0f141a;min-width:auto}"
+                ".swatch{width:18px;height:18px;border-radius:4px;border:1px solid #2a3a54}"
+                ".muted{color:var(--muted);font-size:12px}"
+                ".list{display:flex;flex-direction:column;gap:8px}"
+                ".item{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid #26344a;"
+                "border-radius:10px;background:#121a24}"
+                ".handle{cursor:grab;color:var(--muted);font-size:18px;user-select:none}"
+                ".spacer{flex:1}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>Time</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='pill' href='/'>Back</a>";
+        html += "<div class='pill'>Active: ";
+        html += currentWifiLabel();
+        html += "</div>";
+        html += "</div></div>";
+
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>Modes (Drag = Priority)</div></div>";
+        html += "<div id='mode-list' class='list' style='margin-top:8px'>";
+        for (int i = 0; i < (int)modes.size(); i++) {
+          html += "<div class='item mode-item' draggable='true' data-idx='";
+          html += i;
+          html += "' data-label='";
+          html += modes[i].label;
+          html += "' data-focus='";
+          html += modes[i].focusMin;
+          html += "' data-short='";
+          html += modes[i].shortMin;
+          html += "' data-long='";
+          html += modes[i].longMin;
+          html += "' data-fc='";
+          html += (modes[i].focusColor.length() ? modes[i].focusColor : rgbToHex(FOCUS_RGB));
+          html += "' data-sc='";
+          html += (modes[i].shortColor.length() ? modes[i].shortColor : rgbToHex(SHORT_RGB));
+          html += "' data-lc='";
+          html += (modes[i].longColor.length() ? modes[i].longColor : rgbToHex(LONG_RGB));
+          html += "'>";
+          html += "<div class='handle'>|||</div>";
+          html += "<div>";
+          html += modes[i].label;
+          html += "</div>";
+          String swatch = modes[i].focusColor.length() ? modes[i].focusColor : rgbToHex(FOCUS_RGB);
+          html += "<div style='width:16px;height:16px;border-radius:4px;background:";
+          html += swatch;
+          html += ";border:1px solid #2a3a54'></div>";
+          html += "<div class='spacer'></div>";
+          html += "<button class='btn' type='button' onclick='editMode(";
+          html += i;
+          html += ")'>Edit</button>";
+          html += "<form method='post' action='/time/delete'>";
+          html += "<input type='hidden' name='i' value='";
+          html += i;
+          html += "'>";
+          html += "<button class='btn' type='submit'>Delete</button>";
+          html += "</form>";
+          html += "</div>";
+        }
+        html += "</div>";
+        html += "<form id='orderForm' method='post' action='/time/mode' style='margin-top:10px'>";
+        html += "<input type='hidden' id='modeOrder' name='order' value=''>";
+        html += "<div class='row'>";
+        html += "<button class='btn save' type='submit'>Save Order</button>";
+        html += "</div></form></div>";
+
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>Add / Edit Mode</div></div>";
+        html += "<form method='post' action='/time/save_mode' style='margin-top:8px'>";
+        html += "<input type='hidden' name='i' id='modeIndex' value='-1'>";
+        html += "<div class='row'><input name='label' id='modeLabel' placeholder='Label' required></div>";
+        html += "<div class='row' style='margin-top:10px'>";
+        html += "<div class='muted'>Focus: <span id='focusVal'>25</span> min</div>";
+        html += "<input type='range' min='5' max='90' name='focus' id='modeFocus' value='25' oninput='syncRange(\"modeFocus\",\"focusVal\")'>";
+        html += "</div>";
+        html += "<div class='row'><div class='muted'>Focus Color</div>";
+        html += "<input type='color' id='focusColor' name='focus_color' value='";
+        html += rgbToHex(FOCUS_RGB);
+        html += "' oninput='syncColor(\"focusColor\",\"focusSwatch\")'>";
+        html += "<div id='focusSwatch' class='swatch' style='background:";
+        html += rgbToHex(FOCUS_RGB);
+        html += "'></div></div>";
+        html += "<div class='row' style='margin-top:10px'>";
+        html += "<div class='muted'>Short Break: <span id='shortVal'>5</span> min</div>";
+        html += "<input type='range' min='1' max='30' name='short' id='modeShort' value='5' oninput='syncRange(\"modeShort\",\"shortVal\")'>";
+        html += "</div>";
+        html += "<div class='row'><div class='muted'>Short Color</div>";
+        html += "<input type='color' id='shortColor' name='short_color' value='";
+        html += rgbToHex(SHORT_RGB);
+        html += "' oninput='syncColor(\"shortColor\",\"shortSwatch\")'>";
+        html += "<div id='shortSwatch' class='swatch' style='background:";
+        html += rgbToHex(SHORT_RGB);
+        html += "'></div></div>";
+        html += "<div class='row' style='margin-top:10px'>";
+        html += "<div class='muted'>Long Break: <span id='longVal'>15</span> min</div>";
+        html += "<input type='range' min='5' max='40' name='long' id='modeLong' value='15' oninput='syncRange(\"modeLong\",\"longVal\")'>";
+        html += "</div>";
+        html += "<div class='row'><div class='muted'>Long Color</div>";
+        html += "<input type='color' id='longColor' name='long_color' value='";
+        html += rgbToHex(LONG_RGB);
+        html += "' oninput='syncColor(\"longColor\",\"longSwatch\")'>";
+        html += "<div id='longSwatch' class='swatch' style='background:";
+        html += rgbToHex(LONG_RGB);
+        html += "'></div></div>";
+        html += "<div class='row' style='margin-top:10px'><button class='btn save' type='submit'>Save Mode</button>";
+        html += "<button class='btn' type='button' onclick='resetColors()'>Reset Colors</button>";
+        html += "<button class='btn' type='button' onclick='clearMode()'>Clear</button></div>";
+        html += "</form></div>";
+
+        html += "<script>"
+                "const modeList=document.getElementById('mode-list');"
+                "let dragM=null;"
+                "function updateModeOrder(){const ids=[...modeList.children].filter(x=>x.dataset.idx!==undefined)"
+                ".map(el=>el.dataset.idx);document.getElementById('modeOrder').value=ids.join(',');}"
+                "function enableModeDrag(){[...document.querySelectorAll('.mode-item')].forEach(el=>{"
+                "el.addEventListener('dragstart',e=>{dragM=el;e.dataTransfer.effectAllowed='move';});"
+                "el.addEventListener('dragover',e=>{e.preventDefault();const t=e.currentTarget;"
+                "if(t===dragM)return;const r=t.getBoundingClientRect();"
+                "const next=(e.clientY-r.top)>(r.height/2);"
+                "modeList.insertBefore(dragM,next?t.nextSibling:t);updateModeOrder();});"
+                "});updateModeOrder();}"
+                "const defFocus='" + rgbToHex(FOCUS_RGB) + "';"
+                "const defShort='" + rgbToHex(SHORT_RGB) + "';"
+                "const defLong='" + rgbToHex(LONG_RGB) + "';"
+                "function syncRange(inputId, valueId){"
+                "const v=document.getElementById(inputId).value;"
+                "document.getElementById(valueId).textContent=v;}"
+                "function syncColor(inputId, swatchId){"
+                "const v=document.getElementById(inputId).value;"
+                "document.getElementById(swatchId).style.background=v;}"
+                "function editMode(i){const el=[...document.querySelectorAll('.mode-item')].find(x=>x.dataset.idx==i);"
+                "if(!el)return;document.getElementById('modeIndex').value=i;"
+                "document.getElementById('modeLabel').value=el.dataset.label;"
+                "document.getElementById('modeFocus').value=el.dataset.focus;syncRange('modeFocus','focusVal');"
+                "document.getElementById('modeShort').value=el.dataset.short;syncRange('modeShort','shortVal');"
+                "document.getElementById('modeLong').value=el.dataset.long;syncRange('modeLong','longVal');"
+                "document.getElementById('focusColor').value=el.dataset.fc||defFocus;syncColor('focusColor','focusSwatch');"
+                "document.getElementById('shortColor').value=el.dataset.sc||defShort;syncColor('shortColor','shortSwatch');"
+                "document.getElementById('longColor').value=el.dataset.lc||defLong;syncColor('longColor','longSwatch');}"
+                "function resetColors(){document.getElementById('focusColor').value=defFocus;syncColor('focusColor','focusSwatch');"
+                "document.getElementById('shortColor').value=defShort;syncColor('shortColor','shortSwatch');"
+                "document.getElementById('longColor').value=defLong;syncColor('longColor','longSwatch');}"
+                "function clearMode(){document.getElementById('modeIndex').value='-1';"
+                "document.getElementById('modeLabel').value='';"
+                "document.getElementById('modeFocus').value='25';syncRange('modeFocus','focusVal');"
+                "document.getElementById('modeShort').value='5';syncRange('modeShort','shortVal');"
+                "document.getElementById('modeLong').value='15';syncRange('modeLong','longVal');"
+                "resetColors();}"
+                "enableModeDrag();"
+                "</script>";
+
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/ntp", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String html;
+        html.reserve(4096);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Time Sync</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:linear-gradient(160deg,#0b1118,#141d2a);"
+                "color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto;}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px;}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);text-decoration:none}"
+                "button.btn{padding:8px 12px;border-radius:10px;border:1px solid #2a3a54;background:#1d2736;"
+                "color:var(--text);font-weight:600}"
+                "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+                "input,select{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
+                "padding:8px 10px;min-width:220px}"
                 ".muted{color:var(--muted);font-size:12px}"
                 "</style></head><body><div class='wrap'>";
-        html += "<div class='title'>Time Settings</div>";
+        html += "<div class='title'>Time Sync</div>";
         html += "<div class='card'><div class='row'>";
-        html += "<a class='pill' href='/wifi'>Back</a>";
+        html += "<a class='pill' href='/'>Back</a>";
         html += "<div class='pill'>Active: ";
         html += currentWifiLabel();
         html += "</div>";
@@ -685,9 +1088,8 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += currentIpLabel();
         html += "</div>";
         html += "</div></div>";
-
         html += "<div class='card'>";
-        html += "<form method='post' action='/time/save'>";
+        html += "<form method='post' action='/ntp/save'>";
         html += "<div class='row'><input name='ntp_server' value='";
         html += ntpServer;
         html += "' placeholder='NTP Server'></div>";
@@ -711,7 +1113,10 @@ void updateWifiAndTime(uint32_t nowMs) {
         webServer.send(200, "text/html", html);
       });
 
-      webServer.on("/time/save", []() {
+      webServer.on("/ntp/save", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String ntp = webServer.arg("ntp_server");
         String dst = webServer.arg("dst_mode");
         ntp.trim();
@@ -729,6 +1134,110 @@ void updateWifiAndTime(uint32_t nowMs) {
         timeConfigured = false;
         if (WiFi.status() == WL_CONNECTED) {
           applyTimeConfig();
+        }
+        webServer.sendHeader("Location", "/ntp");
+        webServer.send(303);
+      });
+
+      webServer.on("/time/mode", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String order = webServer.arg("order");
+        String selectedLabel = "";
+        if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
+          selectedLabel = modes[selectedModeIndex].label;
+        }
+        std::vector<ModeEntry> newList;
+        int start = 0;
+        while (start < order.length()) {
+          int comma = order.indexOf(',', start);
+          if (comma < 0) {
+            comma = order.length();
+          }
+          String token = order.substring(start, comma);
+          int idx = token.toInt();
+          if (idx >= 0 && idx < (int)modes.size()) {
+            newList.push_back(modes[idx]);
+          }
+          start = comma + 1;
+        }
+        if (!newList.empty()) {
+          modes = newList;
+          int newIndex = 0;
+          if (selectedLabel.length() > 0) {
+            for (int i = 0; i < (int)modes.size(); i++) {
+              if (modes[i].label == selectedLabel) {
+                newIndex = i;
+                break;
+              }
+            }
+          }
+          selectedModeIndex = newIndex;
+          saveModesConfig();
+          saveSelectedMode();
+        }
+        webServer.sendHeader("Location", "/time");
+        webServer.send(303);
+      });
+
+      webServer.on("/time/save_mode", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        int idx = webServer.arg("i").toInt();
+        String label = webServer.arg("label");
+        int focus = webServer.arg("focus").toInt();
+        int sh = webServer.arg("short").toInt();
+        int lng = webServer.arg("long").toInt();
+        String fc = webServer.arg("focus_color");
+        String sc = webServer.arg("short_color");
+        String lc = webServer.arg("long_color");
+        label.trim();
+        if (label.length() == 0) {
+          webServer.sendHeader("Location", "/time");
+          webServer.send(303);
+          return;
+        }
+        if (focus < 5) focus = 5;
+        if (focus > 90) focus = 90;
+        if (sh < 1) sh = 1;
+        if (sh > 30) sh = 30;
+        if (lng < 5) lng = 5;
+        if (lng > 40) lng = 40;
+        if (idx >= 0 && idx < (int)modes.size()) {
+          modes[idx].label = label;
+          modes[idx].focusMin = focus;
+          modes[idx].shortMin = sh;
+          modes[idx].longMin = lng;
+          modes[idx].focusColor = fc;
+          modes[idx].shortColor = sc;
+          modes[idx].longColor = lc;
+        } else if ((int)modes.size() < MAX_MODES) {
+          ModeEntry m = {label, focus, sh, lng, fc, sc, lc};
+          modes.push_back(m);
+        }
+        saveModesConfig();
+        webServer.sendHeader("Location", "/time");
+        webServer.send(303);
+      });
+
+      webServer.on("/time/delete", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        int idx = webServer.arg("i").toInt();
+        if (idx >= 0 && idx < (int)modes.size()) {
+          modes.erase(modes.begin() + idx);
+        if (modes.empty()) {
+          ModeEntry m1 = {"25/10", 25, 10, 15, "", "", ""};
+          modes.push_back(m1);
+        }
+          if (selectedModeIndex >= (int)modes.size()) {
+            selectedModeIndex = 0;
+          }
+          saveModesConfig();
+          saveSelectedMode();
         }
         webServer.sendHeader("Location", "/time");
         webServer.send(303);
@@ -822,11 +1331,59 @@ void drawClockAt(const char* clockStr, int x, int y, uint16_t color, bool force)
   }
 }
 
+String rgbToHex(const RgbColor& rgb) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "#%02X%02X%02X", rgb.r, rgb.g, rgb.b);
+  return String(buf);
+}
+
+RgbColor parseHexColor(const String& hex, const RgbColor& fallback) {
+  String s = hex;
+  s.trim();
+  if (s.startsWith("#")) {
+    s = s.substring(1);
+  }
+  if (s.length() != 6) {
+    return fallback;
+  }
+  char buf[7];
+  s.toCharArray(buf, sizeof(buf));
+  unsigned long val = strtoul(buf, nullptr, 16);
+  RgbColor out;
+  out.r = (val >> 16) & 0xFF;
+  out.g = (val >> 8) & 0xFF;
+  out.b = val & 0xFF;
+  return out;
+}
+
+uint16_t modeColorForPhase(Phase phase) {
+  if (modes.empty()) {
+    if (phase == PHASE_FOCUS) return colorFocus;
+    if (phase == PHASE_SHORT_BREAK) return colorShort;
+    return colorLong;
+  }
+  int idx = activeModeIndex;
+  if (idx < 0 || idx >= (int)modes.size()) {
+    idx = 0;
+  }
+  const ModeEntry& m = modes[idx];
+  if (phase == PHASE_FOCUS) {
+    RgbColor c = parseHexColor(m.focusColor, FOCUS_RGB);
+    return tft.color565(c.r, c.g, c.b);
+  }
+  if (phase == PHASE_SHORT_BREAK) {
+    RgbColor c = parseHexColor(m.shortColor, SHORT_RGB);
+    return tft.color565(c.r, c.g, c.b);
+  }
+  RgbColor c = parseHexColor(m.longColor, LONG_RGB);
+  return tft.color565(c.r, c.g, c.b);
+}
+
 void loadSavedMode() {
   prefs.begin(PREFS_NAMESPACE, true);
   int saved = prefs.getInt(PREFS_MODE_KEY, 0);
   prefs.end();
-  if (saved < 0 || saved >= MODE_COUNT) {
+  if (saved < 0 || saved >= (int)modes.size()) {
     saved = 0;
   }
   selectedModeIndex = saved;
@@ -845,6 +1402,7 @@ void loadWifiConfig() {
   apPass = prefs.getString(PREFS_AP_PASS_KEY, "");
   ntpServer = prefs.getString(PREFS_NTP_SERVER_KEY, DEFAULT_NTP_SERVER);
   dstMode = prefs.getInt(PREFS_DST_MODE_KEY, DST_AUTO);
+  webPass = prefs.getString(PREFS_WEB_PASS_KEY, "");
   prefs.end();
 
   wifiList.clear();
@@ -894,18 +1452,99 @@ void saveWifiConfig() {
   prefs.putString(PREFS_AP_PASS_KEY, apPass);
   prefs.putString(PREFS_NTP_SERVER_KEY, ntpServer);
   prefs.putInt(PREFS_DST_MODE_KEY, dstMode);
+  prefs.putString(PREFS_WEB_PASS_KEY, webPass);
+  prefs.end();
+}
+
+void loadModesConfig() {
+  prefs.begin(PREFS_NAMESPACE, true);
+  String json = prefs.getString(PREFS_MODES_KEY, "");
+  prefs.end();
+
+  modes.clear();
+  if (json.length() > 0) {
+    StaticJsonDocument<1536> doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (!err) {
+  JsonArray arr = doc.as<JsonArray>();
+  for (JsonVariant v : arr) {
+    if (!v.is<JsonObject>()) {
+      continue;
+    }
+    String label = v["l"] | "";
+    int focus = v["f"] | 25;
+    int sh = v["s"] | 5;
+    int lng = v["g"] | 15;
+    String fc = v["fc"] | "";
+    String sc = v["sc"] | "";
+    String lc = v["lc"] | "";
+    if (label.length() == 0) {
+      continue;
+    }
+    ModeEntry m;
+    m.label = label;
+    m.focusMin = focus;
+    m.shortMin = sh;
+    m.longMin = lng;
+    m.focusColor = fc;
+    m.shortColor = sc;
+    m.longColor = lc;
+    modes.push_back(m);
+    if ((int)modes.size() >= MAX_MODES) {
+      break;
+    }
+  }
+    }
+  }
+
+  if (modes.empty()) {
+    ModeEntry m1 = {"25/10", 25, 10, 15, "", "", ""};
+    ModeEntry m2 = {"20/10", 20, 10, 15, "", "", ""};
+    ModeEntry m3 = {"25/5", 25, 5, 15, "", "", ""};
+    ModeEntry m4 = {"15/5", 15, 5, 15, "", "", ""};
+    modes.push_back(m1);
+    modes.push_back(m2);
+    modes.push_back(m3);
+    modes.push_back(m4);
+  }
+}
+
+void saveModesConfig() {
+  StaticJsonDocument<1536> doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto& m : modes) {
+    JsonObject obj = arr.createNestedObject();
+    obj["l"] = m.label;
+    obj["f"] = m.focusMin;
+    obj["s"] = m.shortMin;
+    obj["g"] = m.longMin;
+    if (m.focusColor.length() > 0) obj["fc"] = m.focusColor;
+    if (m.shortColor.length() > 0) obj["sc"] = m.shortColor;
+    if (m.longColor.length() > 0) obj["lc"] = m.longColor;
+  }
+  String json;
+  serializeJson(doc, json);
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.putString(PREFS_MODES_KEY, json);
   prefs.end();
 }
 
 uint32_t durationForPhase(Phase phase) {
-  const ModeConfig& mode = MODES[activeModeIndex];
+  if (modes.empty()) {
+    return 0;
+  }
+  int idx = activeModeIndex;
+  if (idx < 0 || idx >= (int)modes.size()) {
+    idx = 0;
+  }
+  const ModeEntry& mode = modes[idx];
   if (phase == PHASE_FOCUS) {
-    return mode.focusMs;
+    return (uint32_t)mode.focusMin * 60UL * 1000UL;
   }
   if (phase == PHASE_SHORT_BREAK) {
-    return mode.shortBreakMs;
+    return (uint32_t)mode.shortMin * 60UL * 1000UL;
   }
-  return mode.longBreakMs;
+  return (uint32_t)mode.longMin * 60UL * 1000UL;
 }
 
 const char* labelForPhase(Phase phase) {
@@ -919,13 +1558,7 @@ const char* labelForPhase(Phase phase) {
 }
 
 uint16_t colorForPhase(Phase phase) {
-  if (phase == PHASE_FOCUS) {
-    return colorFocus;
-  }
-  if (phase == PHASE_SHORT_BREAK) {
-    return colorShort;
-  }
-  return colorLong;
+  return modeColorForPhase(phase);
 }
 
 bool isPressedRaw(const ButtonState& button) {
@@ -1178,10 +1811,15 @@ void renderStartScreen(bool force, uint32_t nowMs) {
 
   drawWifiIndicator(wifiConnected, true);
 
-  const char* modeLabel = showClockInstead ? clockStr : MODES[selectedModeIndex].label;
+  const char* modeLabel = showClockInstead ? clockStr : (modes.empty() ? "--" : modes[selectedModeIndex].label.c_str());
   const int modeTextSize = 6;
   tft.setTextSize(modeTextSize);
-  tft.setTextColor(colorFocus, TFT_BLACK);
+  uint16_t modeColor = colorFocus;
+  if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
+    RgbColor c = parseHexColor(modes[selectedModeIndex].focusColor, FOCUS_RGB);
+    modeColor = tft.color565(c.r, c.g, c.b);
+  }
+  tft.setTextColor(modeColor, TFT_BLACK);
   int modeWidth = strlen(modeLabel) * 6 * modeTextSize;
   int modeHeight = 8 * modeTextSize;
   int modeX = (tft.width() - modeWidth) / 2;
@@ -1313,6 +1951,7 @@ void renderTimerScreen(bool force) {
 void setup() {
   Serial.begin(115200);
   loadWifiConfig();
+  loadModesConfig();
   beginWifiSetup();
   loadSavedMode();
 
@@ -1348,6 +1987,7 @@ void loop() {
       bothPressHandled = false;
     } else if (!bothPressHandled && (nowMs - bothPressStartMs >= 10000)) {
       apPass = "";
+      webPass = "";
       saveWifiConfig();
       timeConfigured = false;
       if (WiFi.status() != WL_CONNECTED) {
@@ -1368,6 +2008,7 @@ void loop() {
       completedFocusSessions = 0;
       screenState = SCREEN_TIMER;
       startPhase(PHASE_FOCUS, true);
+      currentDurationMs = durationForPhase(PHASE_FOCUS);
       lastInputMs = nowMs;
       lastRemainingSeconds = 0xFFFFFFFFUL;
       lastPhase = currentPhase;
@@ -1379,7 +2020,9 @@ void loop() {
 
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
     if (rightEvent == BUTTON_EVENT_SHORT) {
-      selectedModeIndex = (selectedModeIndex + 1) % MODE_COUNT;
+      if (!modes.empty()) {
+        selectedModeIndex = (selectedModeIndex + 1) % (int)modes.size();
+      }
       saveSelectedMode();
       lastInputMs = nowMs;
       needsRedraw = true;
