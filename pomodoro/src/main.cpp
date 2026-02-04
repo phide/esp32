@@ -14,8 +14,10 @@ WebServer webServer(80);
 const uint8_t BUTTON_LEFT_PIN = 35;
 const uint8_t BUTTON_RIGHT_PIN = 0;
 
-const char* NTP_SERVER = "0.de.pool.ntp.org";
+const char* DEFAULT_NTP_SERVER = "0.de.pool.ntp.org";
 const char* TZ_EUROPE_BERLIN = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+const char* TZ_STANDARD = "CET-1";
+const char* TZ_SUMMER = "CEST-2";
 const uint32_t WIFI_TRY_TIMEOUT_MS = 12000;
 const uint32_t WIFI_RETRY_GAP_MS = 2000;
 
@@ -27,6 +29,8 @@ const char* PREFS_MODE_KEY = "mode_idx";
 const char* PREFS_WIFI_KEY = "wifi_json";
 const char* PREFS_AP_SSID_KEY = "ap_ssid";
 const char* PREFS_AP_PASS_KEY = "ap_pass";
+const char* PREFS_NTP_SERVER_KEY = "ntp_server";
+const char* PREFS_DST_MODE_KEY = "dst_mode";
 const int MAX_WIFI_NETWORKS = 8;
 const char* DEFAULT_AP_SSID = "Timer";
 
@@ -78,6 +82,12 @@ struct WifiEntry {
   String password;
 };
 
+enum DstMode {
+  DST_AUTO = 0,
+  DST_STANDARD = 1,
+  DST_SUMMER = 2
+};
+
 const char* labelForPhase(Phase phase);
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
@@ -88,6 +98,7 @@ void resetCurrentPhase();
 void saveSelectedMode();
 void loadWifiConfig();
 void saveWifiConfig();
+uint32_t currentElapsedMs();
 
 struct ButtonState {
   uint8_t pin;
@@ -133,6 +144,8 @@ bool webServerStarted = false;
 std::vector<WifiEntry> wifiList;
 String apSsid = DEFAULT_AP_SSID;
 String apPass = "";
+String ntpServer = DEFAULT_NTP_SERVER;
+int dstMode = DST_AUTO;
 bool apActive = false;
 
 int wifiIndex = 0;
@@ -140,6 +153,8 @@ bool wifiConnecting = false;
 bool timeConfigured = false;
 uint32_t wifiAttemptStartMs = 0;
 uint32_t wifiNextAttemptMs = 0;
+uint32_t bothPressStartMs = 0;
+bool bothPressHandled = false;
 
 void startSoftAP() {
   if (apActive) {
@@ -212,6 +227,24 @@ String currentIpLabel() {
   return "-";
 }
 
+const char* tzForMode() {
+  if (dstMode == DST_STANDARD) {
+    return TZ_STANDARD;
+  }
+  if (dstMode == DST_SUMMER) {
+    return TZ_SUMMER;
+  }
+  return TZ_EUROPE_BERLIN;
+}
+
+void applyTimeConfig() {
+  if (ntpServer.length() == 0) {
+    ntpServer = DEFAULT_NTP_SERVER;
+  }
+  configTzTime(tzForMode(), ntpServer.c_str());
+  timeConfigured = true;
+}
+
 void resetWifiAttempts() {
   wifiIndex = 0;
   wifiConnecting = false;
@@ -241,6 +274,10 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
                 "box-shadow:0 10px 30px rgba(0,0,0,.25)}"
                 ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                ".grid{display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start;}"
+                ".panel{border:1px solid #223044;border-radius:12px;background:#111822;padding:12px}"
+                ".timerBox{font-size:36px;font-weight:700;letter-spacing:1px;text-align:center}"
+                ".timerSub{font-size:12px;color:var(--muted);text-align:center;margin-top:4px}"
                 ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);}"
                 ".pill.ok{background:rgba(91,214,147,.15);color:var(--ok)}"
                 ".pill.warn{background:rgba(255,184,77,.15);color:var(--warn)}"
@@ -257,11 +294,12 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "a.mode.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}"
                 "</style></head><body><div class='wrap'>";
         html += "<div class='title'>Pomodoro</div>";
-        html += "<div class='card'>";
+        html += "<div class='card'><div class='grid'>";
+        html += "<div>";
         html += "<div class='row'>";
         html += "<a class='pill link ";
         html += (WiFi.status() == WL_CONNECTED ? "ok" : "warn");
-        html += "' href='/wifi'>WLAN: ";
+    html += "' href='/wifi'>Wi-Fi: ";
         html += currentWifiLabel();
         html += "</a>";
         html += "<div class='pill'>IP: ";
@@ -280,11 +318,11 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "</div>";
         html += "<div class='row' style='margin-top:6px'>";
         html += "<div class='stat'>Running</div><div class='big'>";
-        html += (isRunning ? "Ja" : "Nein");
+        html += (isRunning ? "Yes" : "No");
         html += "</div>";
         html += "</div>";
         html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Modus</div><div class='big'>";
+        html += "<div class='stat'>Mode</div><div class='big'>";
         html += MODES[selectedModeIndex].label;
         html += "</div>";
         html += "</div>";
@@ -295,7 +333,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='btn' href='/reset'>Reset Phase</a>";
         html += "<a class='btn' href='/home'>Start Menu</a>";
         html += "</div>";
-        html += "<div class='stat' style='margin-top:12px'>Modus setzen</div>";
+        html += "<div class='stat' style='margin-top:12px'>Set Mode</div>";
         html += "<div class='modes'>";
         for (int i = 0; i < MODE_COUNT; i++) {
           html += "<a class='mode";
@@ -308,6 +346,19 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += MODES[i].label;
           html += "</a>";
         }
+        html += "</div></div>";
+        html += "<div class='panel'>";
+        uint32_t elapsedMs = currentElapsedMs();
+        uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
+        uint32_t remainingSeconds = remainingMs / 1000;
+        uint32_t minutes = remainingSeconds / 60;
+        uint32_t seconds = remainingSeconds % 60;
+        char timeStr[6];
+        snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
+        html += "<div class='timerBox'>";
+        html += timeStr;
+        html += "</div>";
+        html += "<div class='timerSub'>Remaining</div>";
         html += "</div></div></div></body></html>";
         webServer.send(200, "text/html", html);
       });
@@ -410,10 +461,10 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".spacer{flex:1}"
                 ".muted{color:var(--muted);font-size:12px}"
                 "</style></head><body><div class='wrap'>";
-        html += "<div class='title'>WLAN</div>";
+        html += "<div class='title'>Wi-Fi</div>";
         html += "<div class='card'><div class='row'>";
-        html += "<a class='pill' href='/'>Zurueck</a>";
-        html += "<div class='pill'>Aktiv: ";
+        html += "<a class='pill' href='/'>Back</a>";
+        html += "<div class='pill'>Active: ";
         html += currentWifiLabel();
         html += "</div>";
         html += "<div class='pill'>IP: ";
@@ -422,7 +473,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "</div></div>";
 
         html += "<div class='card'>";
-        html += "<div class='row'><div class='muted'>Gespeicherte Netzwerke (Drag = Prioritaet)</div></div>";
+        html += "<div class='row'><div class='muted'>Saved Networks (Drag = Priority)</div></div>";
         html += "<div id='wifi-list' class='list'>";
         for (int i = 0; i < (int)wifiList.size(); i++) {
           html += "<div class='item wifi-item' draggable='true' data-idx='";
@@ -437,31 +488,31 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "<input type='hidden' name='i' value='";
           html += i;
           html += "'>";
-          html += "<button class='btn' type='submit'>Loeschen</button>";
+          html += "<button class='btn' type='submit'>Delete</button>";
           html += "</form>";
           html += "</div>";
         }
         if (wifiList.empty()) {
-          html += "<div class='muted'>Noch keine Netzwerke gespeichert.</div>";
+          html += "<div class='muted'>No networks saved yet.</div>";
         }
         html += "</div>";
         html += "<form id='orderForm' method='post' action='/wifi/order' style='margin-top:10px'>";
         html += "<input type='hidden' id='orderInput' name='order' value=''>";
-        html += "<button class='btn' type='submit'>Reihenfolge speichern</button>";
+        html += "<button class='btn' type='submit'>Save Order</button>";
         html += "</form>";
         html += "</div>";
 
         html += "<div class='card'>";
-        html += "<div class='row'><div class='muted'>Netzwerk hinzufuegen</div></div>";
+        html += "<div class='row'><div class='muted'>Add Network</div></div>";
         html += "<form method='post' action='/wifi/add' style='margin-top:8px'>";
         html += "<div class='row'><input id='ssidInput' name='ssid' placeholder='SSID' required>";
-        html += "<input name='pass' placeholder='Passwort (optional)'>";
-        html += "<button class='btn' type='submit'>Hinzufuegen</button></div>";
+        html += "<input name='pass' placeholder='Password (optional)'>";
+        html += "<button class='btn' type='submit'>Add</button></div>";
         html += "</form>";
         html += "<div class='row' style='margin-top:10px'>";
         html += "<select id='scanSelect' style='min-width:220px'></select>";
         html += "<button class='btn' type='button' onclick='scan()'>Scan</button>";
-        html += "<button class='btn' type='button' onclick='useSelected()'>Uebernehmen</button>";
+        html += "<button class='btn' type='button' onclick='useSelected()'>Use</button>";
         html += "</div>";
         html += "</div>";
 
@@ -473,9 +524,23 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "' placeholder='AP SSID'>";
         html += "<input name='ap_pass' value='";
         html += apPass;
-        html += "' placeholder='AP Passwort (leer = offen)'>";
-        html += "<button class='btn' type='submit'>Speichern</button></div>";
-        html += "<div class='muted' style='margin-top:6px'>Passwort muss >= 8 Zeichen sein, sonst offenes WLAN.</div>";
+        html += "' placeholder='AP Password (empty = open)'>";
+        html += "<button class='btn' type='submit'>Save</button></div>";
+        html += "<div class='row' style='margin-top:10px'><input name='ntp_server' value='";
+        html += ntpServer;
+        html += "' placeholder='NTP Server'>";
+        html += "<select name='dst_mode'>"
+                "<option value='0'";
+        if (dstMode == DST_AUTO) html += " selected";
+        html += ">DST Auto</option>"
+                "<option value='1'";
+        if (dstMode == DST_STANDARD) html += " selected";
+        html += ">Force Standard Time</option>"
+                "<option value='2'";
+        if (dstMode == DST_SUMMER) html += " selected";
+        html += ">Force Summer Time</option>"
+                "</select></div>";
+        html += "<div class='muted' style='margin-top:6px'>AP password must be >= 8 chars, otherwise open.</div>";
         html += "</form></div>";
 
         html += "<script>"
@@ -493,7 +558,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "async function scan(){const res=await fetch('/wifi/scan');"
                 "const data=await res.json();const sel=document.getElementById('scanSelect');"
                 "sel.innerHTML='';(data.networks||[]).forEach(n=>{const o=document.createElement('option');"
-                "o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+' dBm'+(n.open?', offen':'')+')';"
+                "o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+' dBm'+(n.open?', open':'')+')';"
                 "sel.appendChild(o);});}"
                 "function useSelected(){const sel=document.getElementById('scanSelect');"
                 "if(sel.value){document.getElementById('ssidInput').value=sel.value;}}"
@@ -585,10 +650,24 @@ void updateWifiAndTime(uint32_t nowMs) {
       webServer.on("/wifi/ap", []() {
         String ssid = webServer.arg("ap_ssid");
         String pass = webServer.arg("ap_pass");
+        String ntp = webServer.arg("ntp_server");
+        String dst = webServer.arg("dst_mode");
         ssid.trim();
         apSsid = ssid.length() ? ssid : DEFAULT_AP_SSID;
         apPass = pass;
+        ntp.trim();
+        if (ntp.length() > 0) {
+          ntpServer = ntp;
+        } else {
+          ntpServer = DEFAULT_NTP_SERVER;
+        }
+        int mode = dst.toInt();
+        if (mode < DST_AUTO || mode > DST_SUMMER) {
+          mode = DST_AUTO;
+        }
+        dstMode = mode;
         saveWifiConfig();
+        timeConfigured = false;
         if (WiFi.status() != WL_CONNECTED) {
           stopSoftAP();
           startSoftAP();
@@ -602,8 +681,7 @@ void updateWifiAndTime(uint32_t nowMs) {
 
   if (WiFi.status() == WL_CONNECTED) {
     if (!timeConfigured) {
-      configTzTime(TZ_EUROPE_BERLIN, NTP_SERVER);
-      timeConfigured = true;
+      applyTimeConfig();
     }
     stopSoftAP();
     wifiConnecting = false;
@@ -707,6 +785,8 @@ void loadWifiConfig() {
   String json = prefs.getString(PREFS_WIFI_KEY, "");
   apSsid = prefs.getString(PREFS_AP_SSID_KEY, DEFAULT_AP_SSID);
   apPass = prefs.getString(PREFS_AP_PASS_KEY, "");
+  ntpServer = prefs.getString(PREFS_NTP_SERVER_KEY, DEFAULT_NTP_SERVER);
+  dstMode = prefs.getInt(PREFS_DST_MODE_KEY, DST_AUTO);
   prefs.end();
 
   wifiList.clear();
@@ -754,6 +834,8 @@ void saveWifiConfig() {
   prefs.putString(PREFS_WIFI_KEY, json);
   prefs.putString(PREFS_AP_SSID_KEY, apSsid);
   prefs.putString(PREFS_AP_PASS_KEY, apPass);
+  prefs.putString(PREFS_NTP_SERVER_KEY, ntpServer);
+  prefs.putInt(PREFS_DST_MODE_KEY, dstMode);
   prefs.end();
 }
 
@@ -770,12 +852,12 @@ uint32_t durationForPhase(Phase phase) {
 
 const char* labelForPhase(Phase phase) {
   if (phase == PHASE_FOCUS) {
-    return "FOKUS";
+    return "FOCUS";
   }
   if (phase == PHASE_SHORT_BREAK) {
-    return "KURZPAUSE";
+    return "SHORT BREAK";
   }
-  return "LANGPAUSE";
+  return "LONG BREAK";
 }
 
 uint16_t colorForPhase(Phase phase) {
@@ -900,7 +982,7 @@ void showPhaseTransition(Phase nextPhase) {
   tft.setTextColor(colorForPhase(nextPhase), TFT_BLACK);
   tft.setTextSize(2);
 
-  const char* line1 = "PHASE WECHSEL";
+  const char* line1 = "PHASE CHANGE";
   int line1Width = strlen(line1) * 6 * 2;
   int line1X = (tft.width() - line1Width) / 2;
   tft.setCursor(line1X, 40);
@@ -988,7 +1070,7 @@ int currentRoundForDisplay() {
 void drawRoundIndicator(uint16_t color) {
   char roundStr[12];
   int round = currentRoundForDisplay();
-  snprintf(roundStr, sizeof(roundStr), "RUNDE %d/4", round);
+  snprintf(roundStr, sizeof(roundStr), "ROUND %d/4", round);
 
   tft.setTextSize(1);
   tft.setTextColor(color, TFT_BLACK);
@@ -1049,7 +1131,7 @@ void renderStartScreen(bool force, uint32_t nowMs) {
   tft.setCursor(modeX, modeY);
   tft.print(modeLabel);
 
-  const char* modeHint = "MODUSWECHSEL";
+  const char* modeHint = "CHANGE MODE";
   tft.setTextSize(1);
   tft.setTextColor(colorMuted, TFT_BLACK);
   int hintWidth = strlen(modeHint) * 6;
@@ -1137,7 +1219,7 @@ void renderTimerScreen(bool force) {
 
   if (fullRedraw) {
     if (!isRunning) {
-      const char* pausedLabel = "PAUSIERT";
+      const char* pausedLabel = "PAUSED";
       tft.setTextSize(2);
       tft.setTextColor(colorMuted, TFT_BLACK);
       int pausedWidth = strlen(pausedLabel) * 6 * 2;
@@ -1199,6 +1281,26 @@ void loop() {
   updateWifiAndTime(nowMs);
   if (webServerStarted) {
     webServer.handleClient();
+  }
+
+  bool bothPressed = isPressedRaw(leftButton) && isPressedRaw(rightButton);
+  if (bothPressed) {
+    if (bothPressStartMs == 0) {
+      bothPressStartMs = nowMs;
+      bothPressHandled = false;
+    } else if (!bothPressHandled && (nowMs - bothPressStartMs >= 10000)) {
+      apPass = "";
+      saveWifiConfig();
+      timeConfigured = false;
+      if (WiFi.status() != WL_CONNECTED) {
+        stopSoftAP();
+        startSoftAP();
+      }
+      bothPressHandled = true;
+    }
+  } else {
+    bothPressStartMs = 0;
+    bothPressHandled = false;
   }
 
   if (screenState == SCREEN_START) {

@@ -1,6 +1,6 @@
 # Project Overview
 This is a PlatformIO-based ESP32 (Arduino framework) Pomodoro timer targeting the LilyGO TTGO T-Display (ST7789, 135x240). The UI is drawn with `TFT_eSPI`, and state is managed in `src/main.cpp`.
-Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time via NTP (Europe/Berlin DST), and falls back to a self-hosted AP when no STA connection is available.
+Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time via configurable NTP + DST, and falls back to a self-hosted AP when no STA connection is available.
 
 # Key Hardware/IO
 - Display: ST7789 via `TFT_eSPI` with build flags in `platformio.ini`.
@@ -27,6 +27,8 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 - Wi-Fi settings stored in NVS:
   - Networks list: `pomodoro` / `wifi_json`
   - AP config: `pomodoro` / `ap_ssid`, `ap_pass`
+  - NTP config: `pomodoro` / `ntp_server`, `dst_mode`
+- Holding both buttons for ~10s clears AP password (reverts to open AP).
 - Left button: start on start screen; pause/resume on timer screen.
 - Right button: short press advances phase; long press resets current phase.
 
