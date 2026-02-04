@@ -19,6 +19,14 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 - Web UI (HTTP) runs on both STA and AP:
   - `GET /` status + controls (Settings pill links to `/settings`)
   - `GET /settings` links to Wi-Fi, Time, Time Sync, Password
+  - `GET /wifi` Wi-Fi manager (add/delete/reorder + AP settings, shows IP)
+  - `GET /time` time + mode editor (add/edit/delete/reorder, sliders, colors) and save buttons
+  - `GET /ntp` time sync (NTP + DST)
+  - `GET /password` web password settings
+  - `GET /status` JSON status for live UI updates
+  - `POST /ntp/save`
+  - `POST /password/save`
+  - `POST /time/mode`, `/time/save_mode`, `/time/delete`
   - `GET /start`, `/pause`, `/next`, `/reset`
   - `GET /home` returns to start menu
   - `GET /mode?i=0..N`
@@ -36,7 +44,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - Networks list: `pomodoro` / `wifi_json`
   - AP config: `pomodoro` / `ap_ssid`, `ap_pass`
   - NTP config: `pomodoro` / `ntp_server`, `dst_mode`
-- Mode list stored in NVS: `pomodoro` / `modes_json` (editable, reorderable).
+- Mode list stored in NVS: `pomodoro` / `modes_json` (editable, reorderable, per-mode colors).
 - Web UI password stored in NVS: `pomodoro` / `web_pass` (Basic Auth, username `admin`).
 - Holding both buttons for ~10s clears AP password (reverts to open AP).
   - Also clears web UI password.
