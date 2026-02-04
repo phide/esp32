@@ -1,6 +1,6 @@
 # Project Overview
 This is a PlatformIO-based ESP32 (Arduino framework) Pomodoro timer targeting the LilyGO TTGO T-Display (ST7789, 135x240). The UI is drawn with `TFT_eSPI`, and state is managed in `src/main.cpp`.
-Wi-Fi is configured to try multiple SSIDs in order and sync time via NTP with Europe/Berlin DST rules.
+Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time via NTP (Europe/Berlin DST), and falls back to a self-hosted AP when no STA connection is available.
 
 # Key Hardware/IO
 - Display: ST7789 via `TFT_eSPI` with build flags in `platformio.ini`.
@@ -16,11 +16,17 @@ Wi-Fi is configured to try multiple SSIDs in order and sync time via NTP with Eu
   - Start screen shows the clock only after 60s of inactivity (replaces mode label).
 - Wi-Fi indicator: small icon at top-left on the start screen (connected vs. disconnected color).
 - Last selected mode is stored in NVS and restored on boot (Preferences `pomodoro` / `mode_idx`).
-- Web UI (HTTP) starts after Wi-Fi connects:
-  - `GET /` status + controls
+- Web UI (HTTP) runs on both STA and AP:
+  - `GET /` status + controls (WLAN pill links to `/wifi`)
   - `GET /start`, `/pause`, `/next`, `/reset`
   - `GET /home` returns to start menu
   - `GET /mode?i=0..N`
+  - `GET /wifi` Wi-Fi manager (add/delete/reorder + AP settings)
+  - `GET /wifi/scan` JSON scan results
+  - `POST /wifi/add`, `/wifi/delete`, `/wifi/order`, `/wifi/ap`
+- Wi-Fi settings stored in NVS:
+  - Networks list: `pomodoro` / `wifi_json`
+  - AP config: `pomodoro` / `ap_ssid`, `ap_pass`
 - Left button: start on start screen; pause/resume on timer screen.
 - Right button: short press advances phase; long press resets current phase.
 
