@@ -288,6 +288,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "a.btn{display:block;text-align:center;padding:10px 12px;border-radius:10px;"
                 "border:1px solid #2a3a54;background:#1d2736;color:var(--text);text-decoration:none;font-weight:600}"
                 "a.btn.primary{background:var(--accent);border-color:#3f7ed1;color:#07111e}"
+                "a.btn.save,button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
                 ".modes{margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;}"
                 "a.mode{padding:8px 10px;border-radius:10px;border:1px solid #2a3a54;text-decoration:none;color:var(--text);"
                 "text-align:center}"
@@ -464,6 +465,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<div class='title'>Wi-Fi</div>";
         html += "<div class='card'><div class='row'>";
         html += "<a class='pill' href='/'>Back</a>";
+        html += "<a class='pill' href='/time'>Time Settings</a>";
         html += "<div class='pill'>Active: ";
         html += currentWifiLabel();
         html += "</div>";
@@ -525,21 +527,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<input name='ap_pass' value='";
         html += apPass;
         html += "' placeholder='AP Password (empty = open)'>";
-        html += "<button class='btn' type='submit'>Save</button></div>";
-        html += "<div class='row' style='margin-top:10px'><input name='ntp_server' value='";
-        html += ntpServer;
-        html += "' placeholder='NTP Server'>";
-        html += "<select name='dst_mode'>"
-                "<option value='0'";
-        if (dstMode == DST_AUTO) html += " selected";
-        html += ">DST Auto</option>"
-                "<option value='1'";
-        if (dstMode == DST_STANDARD) html += " selected";
-        html += ">Force Standard Time</option>"
-                "<option value='2'";
-        if (dstMode == DST_SUMMER) html += " selected";
-        html += ">Force Summer Time</option>"
-                "</select></div>";
+        html += "<button class='btn save' type='submit'>Save</button></div>";
         html += "<div class='muted' style='margin-top:6px'>AP password must be >= 8 chars, otherwise open.</div>";
         html += "</form></div>";
 
@@ -650,11 +638,82 @@ void updateWifiAndTime(uint32_t nowMs) {
       webServer.on("/wifi/ap", []() {
         String ssid = webServer.arg("ap_ssid");
         String pass = webServer.arg("ap_pass");
-        String ntp = webServer.arg("ntp_server");
-        String dst = webServer.arg("dst_mode");
         ssid.trim();
         apSsid = ssid.length() ? ssid : DEFAULT_AP_SSID;
         apPass = pass;
+        saveWifiConfig();
+        if (WiFi.status() != WL_CONNECTED) {
+          stopSoftAP();
+          startSoftAP();
+        }
+        webServer.sendHeader("Location", "/wifi");
+        webServer.send(303);
+      });
+
+      webServer.on("/time", []() {
+        String html;
+        html.reserve(4096);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Time Settings</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:linear-gradient(160deg,#0b1118,#141d2a);"
+                "color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto;}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px;}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);text-decoration:none}"
+                "button.btn{padding:8px 12px;border-radius:10px;border:1px solid #2a3a54;background:#1d2736;"
+                "color:var(--text);font-weight:600}"
+                "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+                "input,select{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
+                "padding:8px 10px;min-width:220px}"
+                ".muted{color:var(--muted);font-size:12px}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>Time Settings</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='pill' href='/wifi'>Back</a>";
+        html += "<div class='pill'>Active: ";
+        html += currentWifiLabel();
+        html += "</div>";
+        html += "<div class='pill'>IP: ";
+        html += currentIpLabel();
+        html += "</div>";
+        html += "</div></div>";
+
+        html += "<div class='card'>";
+        html += "<form method='post' action='/time/save'>";
+        html += "<div class='row'><input name='ntp_server' value='";
+        html += ntpServer;
+        html += "' placeholder='NTP Server'></div>";
+        html += "<div class='row' style='margin-top:10px'><select name='dst_mode'>";
+        html += "<option value='0'";
+        if (dstMode == DST_AUTO) html += " selected";
+        html += ">DST Auto</option>";
+        html += "<option value='1'";
+        if (dstMode == DST_STANDARD) html += " selected";
+        html += ">Force Standard Time</option>";
+        html += "<option value='2'";
+        if (dstMode == DST_SUMMER) html += " selected";
+        html += ">Force Summer Time</option>";
+        html += "</select></div>";
+        html += "<div class='row' style='margin-top:12px'>";
+        html += "<button class='btn save' type='submit'>Save</button>";
+        html += "</div>";
+        html += "<div class='muted' style='margin-top:6px'>If you leave without saving, nothing changes.</div>";
+        html += "</form></div>";
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/time/save", []() {
+        String ntp = webServer.arg("ntp_server");
+        String dst = webServer.arg("dst_mode");
         ntp.trim();
         if (ntp.length() > 0) {
           ntpServer = ntp;
@@ -668,11 +727,10 @@ void updateWifiAndTime(uint32_t nowMs) {
         dstMode = mode;
         saveWifiConfig();
         timeConfigured = false;
-        if (WiFi.status() != WL_CONNECTED) {
-          stopSoftAP();
-          startSoftAP();
+        if (WiFi.status() == WL_CONNECTED) {
+          applyTimeConfig();
         }
-        webServer.sendHeader("Location", "/wifi");
+        webServer.sendHeader("Location", "/time");
         webServer.send(303);
       });
 

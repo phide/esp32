@@ -21,7 +21,9 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - `GET /start`, `/pause`, `/next`, `/reset`
   - `GET /home` returns to start menu
   - `GET /mode?i=0..N`
-  - `GET /wifi` Wi-Fi manager (add/delete/reorder + AP settings)
+  - `GET /wifi` Wi-Fi manager (add/delete/reorder + AP settings, link to time settings)
+  - `GET /time` time settings (NTP + DST) and save button
+  - `POST /time/save`
   - `GET /wifi/scan` JSON scan results
   - `POST /wifi/add`, `/wifi/delete`, `/wifi/order`, `/wifi/ap`
 - Wi-Fi settings stored in NVS:
