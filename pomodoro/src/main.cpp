@@ -2986,35 +2986,79 @@ void renderAiScreen(bool force) {
 }
 
 void drawWeatherIcon(int code, float rain, float snow, int x, int y) {
-  uint16_t c = colorShort;
+  const int w = 32;
+  const int h = 32;
+  uint16_t sunC = tft.color565(255, 200, 40);
+  uint16_t cloudC = tft.color565(90, 140, 200);
+  uint16_t rainC = tft.color565(70, 170, 255);
+  uint16_t snowC = tft.color565(200, 220, 255);
+  uint16_t stormC = tft.color565(255, 180, 40);
+
+  auto drawSun = [&]() {
+    int cx = x + w / 2;
+    int cy = y + h / 2;
+    tft.fillCircle(cx, cy, 7, sunC);
+    tft.drawLine(cx, y + 2, cx, y + 8, sunC);
+    tft.drawLine(cx, y + h - 8, cx, y + h - 2, sunC);
+    tft.drawLine(x + 2, cy, x + 8, cy, sunC);
+    tft.drawLine(x + w - 8, cy, x + w - 2, cy, sunC);
+    tft.drawLine(cx - 6, cy - 6, cx - 2, cy - 2, sunC);
+    tft.drawLine(cx + 2, cy + 2, cx + 6, cy + 6, sunC);
+    tft.drawLine(cx + 2, cy - 2, cx + 6, cy - 6, sunC);
+    tft.drawLine(cx - 6, cy + 6, cx - 2, cy + 2, sunC);
+  };
+
+  auto drawCloud = [&](uint16_t c) {
+    tft.fillCircle(x + 10, y + 16, 7, c);
+    tft.fillCircle(x + 18, y + 13, 9, c);
+    tft.fillCircle(x + 25, y + 16, 7, c);
+    tft.fillRoundRect(x + 6, y + 16, 22, 10, 5, c);
+  };
+
+  auto drawRainDrops = [&](uint16_t c) {
+    tft.drawLine(x + 10, y + 26, x + 8, y + 30, c);
+    tft.drawLine(x + 16, y + 26, x + 14, y + 30, c);
+    tft.drawLine(x + 22, y + 26, x + 20, y + 30, c);
+  };
+
+  auto drawSnowFlake = [&](int cx, int cy, uint16_t c) {
+    tft.drawLine(cx - 2, cy, cx + 2, cy, c);
+    tft.drawLine(cx, cy - 2, cx, cy + 2, c);
+    tft.drawLine(cx - 2, cy - 2, cx + 2, cy + 2, c);
+    tft.drawLine(cx - 2, cy + 2, cx + 2, cy - 2, c);
+  };
+
+  auto drawLightning = [&](uint16_t c) {
+    tft.fillTriangle(x + 16, y + 18, x + 20, y + 18, x + 12, y + 30, c);
+    tft.fillTriangle(x + 12, y + 26, x + 18, y + 26, x + 10, y + 32, c);
+  };
+
   if (snow > 0.0f) {
-    tft.drawLine(x + 2, y + 2, x + 14, y + 14, c);
-    tft.drawLine(x + 14, y + 2, x + 2, y + 14, c);
-    tft.drawLine(x + 8, y, x + 8, y + 16, c);
-    tft.drawLine(x, y + 8, x + 16, y + 8, c);
+    drawCloud(cloudC);
+    drawSnowFlake(x + 10, y + 20, snowC);
+    drawSnowFlake(x + 16, y + 20, snowC);
     return;
   }
   if (rain > 0.0f) {
-    tft.fillRoundRect(x + 2, y + 2, 14, 8, 3, c);
-    tft.drawLine(x + 5, y + 12, x + 3, y + 16, c);
-    tft.drawLine(x + 10, y + 12, x + 8, y + 16, c);
-    return;
-  }
-  if (code >= 45 && code <= 48) {
-    tft.drawFastHLine(x + 2, y + 6, 14, c);
-    tft.drawFastHLine(x + 2, y + 10, 14, c);
-    return;
-  }
-  if (code >= 1 && code <= 3) {
-    tft.fillCircle(x + 8, y + 8, 6, c);
+    drawCloud(cloudC);
+    drawRainDrops(rainC);
     return;
   }
   if (code >= 80 && code <= 99) {
-    tft.fillTriangle(x + 4, y + 2, x + 12, y + 2, x + 8, y + 12, c);
-    tft.drawLine(x + 8, y + 12, x + 8, y + 16, c);
+    drawCloud(cloudC);
+    drawLightning(stormC);
     return;
   }
-  tft.fillCircle(x + 8, y + 8, 6, c);
+  if (code >= 45 && code <= 48) {
+    drawCloud(cloudC);
+    tft.drawFastHLine(x + 4, y + 20, 16, cloudC);
+    return;
+  }
+  if (code >= 1 && code <= 3) {
+    drawCloud(cloudC);
+    return;
+  }
+  drawSun();
 }
 
 void renderWeatherScreen(bool force) {
@@ -3059,8 +3103,8 @@ void renderWeatherScreen(bool force) {
   tft.setTextColor(colorFocus, TFT_BLACK);
   tft.setCursor(6, 6);
   tft.print("WEATHER");
-  int iconX = 200;
-  int iconY = 10;
+  int iconX = 196;
+  int iconY = 6;
 
   if (weatherViewIndex == 0) {
     int tempX = 10;
