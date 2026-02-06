@@ -327,10 +327,10 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".stat{font-size:14px;color:var(--muted)}"
                 ".big{font-size:28px;font-weight:700}"
                 ".btns{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:12px;}"
-                "a.btn{display:block;text-align:center;padding:10px 12px;border-radius:10px;"
+                "a.btn,button.btn{display:block;text-align:center;padding:10px 12px;border-radius:10px;"
                 "border:1px solid #2a3a54;background:#1d2736;color:var(--text);text-decoration:none;font-weight:600}"
-                "a.btn.disabled{opacity:.45;pointer-events:none}"
-                "a.btn.primary{background:var(--accent);border-color:#3f7ed1;color:#07111e}"
+                "a.btn.disabled,button.btn.disabled{opacity:.45;pointer-events:none}"
+                "a.btn.primary,button.btn.primary{background:var(--accent);border-color:#3f7ed1;color:#07111e}"
                 "a.btn.save,button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
                 ".modes{margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;}"
                 "a.mode{padding:8px 10px;border-radius:10px;border:1px solid #2a3a54;text-decoration:none;color:var(--text);"
@@ -438,8 +438,7 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "</div>";
         } else if (selectedAppIndex == APP_AI) {
           html += "<div class='row' style='margin-top:6px'>";
-          html += "<div class='stat'>Status</div><div class='big' id='statusText'>AI</div>";
-          html += "<div class='stat' id='aiState' style='margin-left:6px;color:var(--muted)'>Ready</div>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>Ready</div>";
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
@@ -522,10 +521,10 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "</div>";
         }
         if (aiActive) {
-          html += "<form method='post' action='/ai/send' style='margin-top:10px'>";
+          html += "<form id='aiHomeForm' method='post' action='/ai/send' style='margin-top:10px'>";
           html += "<textarea id='aiPromptHome' name='prompt' placeholder='Type a message...'></textarea>";
           html += "<div class='row' style='margin-top:8px'>";
-          html += "<button class='btn primary' type='submit'>Send</button>";
+          html += "<button class='btn save' type='submit'>Send</button>";
           html += "</div>";
           html += "</form>";
           html += "<div id='aiResponse' class='response'></div>";
@@ -542,17 +541,15 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "const appText=document.getElementById('appText');"
                 "if(appText){appText.textContent=s.app;}"
                 "const statusText=document.getElementById('statusText');"
-                "if(statusText){statusText.textContent=s.screen;}"
+                "if(statusText){statusText.textContent=(s.screen==='AI' ? (s.ai_state||'Ready') : s.screen);}"
                 "const phaseText=document.getElementById('phaseText');"
                 "if(phaseText){phaseText.textContent=s.phase;}"
                 "const runningText=document.getElementById('runningText');"
                 "if(runningText){runningText.textContent=s.running ? 'Yes':'No';}"
                 "const modeText=document.getElementById('modeText');"
                 "if(modeText){modeText.textContent=s.mode;}"
-                "const aiState=document.getElementById('aiState');"
-                "if(aiState){aiState.textContent=s.ai_state || 'Ready';}"
                 "const aiResp=document.getElementById('aiResponse');"
-                "if(aiResp){aiResp.textContent=s.ai_response || '';}"
+                "if(aiResp){aiResp.innerHTML=(s.ai_response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');}"
                 "}catch(e){}}"
                 "setInterval(refreshStatus,1000);"
                 "const promptHome=document.getElementById('aiPromptHome');"
@@ -567,6 +564,11 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "if(typingTimer)clearTimeout(typingTimer);"
                 "typingTimer=setTimeout(()=>sendTyping(val),250);"
                 "});"
+                "const form=document.getElementById('aiHomeForm');"
+                "form.addEventListener('submit',async(e)=>{e.preventDefault();"
+                "const body='prompt='+encodeURIComponent(promptHome.value);"
+                "const res=await fetch('/ai/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},body});"
+                "if(res.ok){promptHome.value='';sendTyping('');}});"
                 "}"
                 "</script>";
         html += "</body></html>";
@@ -1230,7 +1232,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "async function refresh(){"
                 "try{const res=await fetch('/ai/status?ts='+Date.now());"
                 "const s=await res.json();"
-                "document.getElementById('aiResponse').textContent=s.response||'';"
+                "document.getElementById('aiResponse').innerHTML=(s.response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');"
                 "}catch(e){}}"
                 "setInterval(refresh,1000);"
                 "refresh();"
@@ -1268,7 +1270,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         aiTypingText = text;
         aiScrollOffset = 0;
         if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
-          renderAiScreen(true);
+          renderAiScreen(false);
         }
         webServer.send(200, "application/json", "{\"ok\":true}");
       });
@@ -1306,8 +1308,12 @@ void updateWifiAndTime(uint32_t nowMs) {
           if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
             renderAiScreen(true);
           }
-          webServer.sendHeader("Location", "/ai");
-          webServer.send(303);
+          if (webServer.header("X-Requested-With") == "fetch") {
+            webServer.send(200, "application/json", "{\"ok\":false}");
+          } else {
+            webServer.sendHeader("Location", "/");
+            webServer.send(303);
+          }
           return;
         }
         aiTypingText = prompt;
@@ -1368,7 +1374,7 @@ void updateWifiAndTime(uint32_t nowMs) {
             if (strlen(content) > 0) {
               aiResponseText += String(content);
               if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
-                renderAiScreen(true);
+                renderAiScreen(false);
               }
             }
             if (done) {
@@ -1385,8 +1391,12 @@ void updateWifiAndTime(uint32_t nowMs) {
         if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
           renderAiScreen(true);
         }
-        webServer.sendHeader("Location", "/ai");
-        webServer.send(303);
+        if (webServer.header("X-Requested-With") == "fetch") {
+          webServer.send(200, "application/json", "{\"ok\":true}");
+        } else {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+        }
       });
 
       webServer.on("/ai/open", []() {
@@ -2722,16 +2732,27 @@ void renderAiScreen(bool force) {
     content = "AI ready.\nOpen the web UI to send a message.";
   }
 
-  if (!force && content == lastContent && aiScrollOffset == lastScroll) {
+  String displayContent = content;
+  displayContent.replace("ä", "ae");
+  displayContent.replace("ö", "oe");
+  displayContent.replace("ü", "ue");
+  displayContent.replace("Ä", "Ae");
+  displayContent.replace("Ö", "Oe");
+  displayContent.replace("Ü", "Ue");
+  displayContent.replace("ß", "ss");
+
+  if (!force && displayContent == lastContent && aiScrollOffset == lastScroll) {
     return;
   }
 
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setTextColor(colorFocus, TFT_BLACK);
-  tft.setCursor(6, 6);
-  tft.print("AI");
-  drawWifiIndicator(WiFi.status() == WL_CONNECTED, true);
+  if (force) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(colorFocus, TFT_BLACK);
+    tft.setCursor(6, 6);
+    tft.print("AI");
+    drawWifiIndicator(WiFi.status() == WL_CONNECTED, true);
+  }
 
   const int textSize = 2;
   const int lineHeight = 8 * textSize + 2;
@@ -2739,7 +2760,7 @@ void renderAiScreen(bool force) {
   const int maxWidth = tft.width() - 12;
   int maxChars = maxWidth / (6 * textSize);
   if (maxChars < 10) maxChars = 10;
-  std::vector<String> lines = wrapText(content, maxChars);
+  std::vector<String> lines = wrapText(displayContent, maxChars);
 
   int maxVisible = (tft.height() - topY - 6) / lineHeight;
   if (maxVisible < 1) maxVisible = 1;
@@ -2748,16 +2769,24 @@ void renderAiScreen(bool force) {
   if (aiScrollOffset < 0) aiScrollOffset = 0;
   if (aiScrollOffset > maxScroll) aiScrollOffset = maxScroll;
 
+  tft.fillRect(0, topY, tft.width(), tft.height() - topY, TFT_BLACK);
   tft.setTextSize(textSize);
   tft.setTextColor(colorMuted, TFT_BLACK);
   for (int i = 0; i < maxVisible; i++) {
     int idx = aiScrollOffset + i;
     if (idx >= (int)lines.size()) break;
+    String line = lines[idx];
+    bool boldLine = line.indexOf("**") >= 0;
+    line.replace("**", "");
     tft.setCursor(6, topY + i * lineHeight);
-    tft.print(lines[idx]);
+    tft.print(line);
+    if (boldLine) {
+      tft.setCursor(7, topY + i * lineHeight);
+      tft.print(line);
+    }
   }
 
-  lastContent = content;
+  lastContent = displayContent;
   lastScroll = aiScrollOffset;
 }
 
