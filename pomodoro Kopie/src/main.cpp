@@ -32,6 +32,7 @@ const char* PREFS_AP_PASS_KEY = "ap_pass";
 const char* PREFS_NTP_SERVER_KEY = "ntp_server";
 const char* PREFS_DST_MODE_KEY = "dst_mode";
 const char* PREFS_MODES_KEY = "modes_json";
+const char* PREFS_WEB_PASS_KEY = "web_pass";
 const int MAX_WIFI_NETWORKS = 8;
 const int MAX_MODES = 8;
 const char* DEFAULT_AP_SSID = "Timer";
@@ -149,6 +150,7 @@ String apSsid = DEFAULT_AP_SSID;
 String apPass = "";
 String ntpServer = DEFAULT_NTP_SERVER;
 int dstMode = DST_AUTO;
+String webPass = "";
 bool apActive = false;
 
 int wifiIndex = 0;
@@ -230,6 +232,16 @@ String currentIpLabel() {
   return "-";
 }
 
+bool ensureAuth() {
+  if (webPass.length() == 0) {
+    return true;
+  }
+  if (webServer.authenticate("admin", webPass.c_str())) {
+    return true;
+  }
+  webServer.requestAuthentication();
+  return false;
+}
 
 const char* tzForMode() {
   if (dstMode == DST_STANDARD) {
@@ -262,6 +274,9 @@ void updateWifiAndTime(uint32_t nowMs) {
   if (!webServerStarted) {
     webServerStarted = true;
       webServer.on("/", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -400,6 +415,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/start", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         activeModeIndex = selectedModeIndex;
         completedFocusSessions = 0;
         screenState = SCREEN_TIMER;
@@ -415,6 +433,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/pause", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         if (screenState != SCREEN_TIMER) {
           webServer.sendHeader("Location", "/");
           webServer.send(303);
@@ -427,6 +448,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/next", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         if (screenState != SCREEN_TIMER) {
           webServer.sendHeader("Location", "/");
           webServer.send(303);
@@ -440,6 +464,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/reset", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         if (screenState != SCREEN_TIMER) {
           webServer.sendHeader("Location", "/");
           webServer.send(303);
@@ -452,6 +479,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/home", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         if (screenState != SCREEN_TIMER) {
           webServer.sendHeader("Location", "/");
           webServer.send(303);
@@ -471,6 +501,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/mode", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         if (webServer.hasArg("i")) {
           int idx = webServer.arg("i").toInt();
           if (idx >= 0 && idx < (int)modes.size()) {
@@ -487,6 +520,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/status", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         StaticJsonDocument<256> doc;
         uint32_t elapsedMs = currentElapsedMs();
         uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
@@ -510,6 +546,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(6144);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -635,6 +674,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/scan", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         int n = WiFi.scanNetworks();
         StaticJsonDocument<1024> doc;
         JsonArray arr = doc.createNestedArray("networks");
@@ -651,6 +693,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/add", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String ssid = webServer.arg("ssid");
         String pass = webServer.arg("pass");
         ssid.trim();
@@ -677,6 +722,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/delete", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         int idx = webServer.arg("i").toInt();
         if (idx >= 0 && idx < (int)wifiList.size()) {
           wifiList.erase(wifiList.begin() + idx);
@@ -688,6 +736,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/order", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String order = webServer.arg("order");
         std::vector<WifiEntry> newList;
         int start = 0;
@@ -713,6 +764,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/wifi/ap", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String ssid = webServer.arg("ap_ssid");
         String pass = webServer.arg("ap_pass");
         ssid.trim();
@@ -728,6 +782,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/settings", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(2048);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -753,13 +810,68 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
         html += "<a class='btn' href='/time'>Time</a>";
         html += "<a class='btn' href='/ntp'>Time Sync</a>";
+        html += "<a class='btn' href='/password'>Password</a>";
         html += "</div></div>";
         html += "</div></body></html>";
         webServer.send(200, "text/html", html);
       });
 
+      webServer.on("/password", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String html;
+        html.reserve(2048);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Password</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:linear-gradient(160deg,#0b1118,#141d2a);"
+                "color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto;}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px;}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                "button.btn{padding:8px 12px;border-radius:10px;border:1px solid #2a3a54;background:#1d2736;"
+                "color:var(--text);font-weight:600}"
+                "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+                "input{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
+                "padding:8px 10px;min-width:220px}"
+                ".muted{color:var(--muted);font-size:12px}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>Password</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='btn' href='/settings'>Back</a>";
+        html += "</div></div>";
+        html += "<div class='card'>";
+        html += "<form method='post' action='/password/save'>";
+        html += "<div class='row'><input name='web_pass' type='password' placeholder='Web Password (empty = open)'></div>";
+        html += "<div class='row' style='margin-top:12px'><button class='btn save' type='submit'>Save</button></div>";
+        html += "<div class='muted' style='margin-top:6px'>Empty password disables protection.</div>";
+        html += "</form></div>";
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/password/save", []() {
+        if (!ensureAuth()) {
+          return;
+        }
+        String pass = webServer.arg("web_pass");
+        webPass = pass;
+        saveWifiConfig();
+        webServer.sendHeader("Location", "/password");
+        webServer.send(303);
+      });
 
       webServer.on("/time", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -939,6 +1051,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/ntp", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String html;
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -999,6 +1114,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/ntp/save", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String ntp = webServer.arg("ntp_server");
         String dst = webServer.arg("dst_mode");
         ntp.trim();
@@ -1022,6 +1140,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/time/mode", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         String order = webServer.arg("order");
         String selectedLabel = "";
         if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
@@ -1061,6 +1182,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/time/save_mode", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         int idx = webServer.arg("i").toInt();
         String label = webServer.arg("label");
         int focus = webServer.arg("focus").toInt();
@@ -1099,6 +1223,9 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/time/delete", []() {
+        if (!ensureAuth()) {
+          return;
+        }
         int idx = webServer.arg("i").toInt();
         if (idx >= 0 && idx < (int)modes.size()) {
           modes.erase(modes.begin() + idx);
@@ -1275,6 +1402,7 @@ void loadWifiConfig() {
   apPass = prefs.getString(PREFS_AP_PASS_KEY, "");
   ntpServer = prefs.getString(PREFS_NTP_SERVER_KEY, DEFAULT_NTP_SERVER);
   dstMode = prefs.getInt(PREFS_DST_MODE_KEY, DST_AUTO);
+  webPass = prefs.getString(PREFS_WEB_PASS_KEY, "");
   prefs.end();
 
   wifiList.clear();
@@ -1324,6 +1452,7 @@ void saveWifiConfig() {
   prefs.putString(PREFS_AP_PASS_KEY, apPass);
   prefs.putString(PREFS_NTP_SERVER_KEY, ntpServer);
   prefs.putInt(PREFS_DST_MODE_KEY, dstMode);
+  prefs.putString(PREFS_WEB_PASS_KEY, webPass);
   prefs.end();
 }
 
@@ -1858,6 +1987,7 @@ void loop() {
       bothPressHandled = false;
     } else if (!bothPressHandled && (nowMs - bothPressStartMs >= 10000)) {
       apPass = "";
+      webPass = "";
       saveWifiConfig();
       timeConfigured = false;
       if (WiFi.status() != WL_CONNECTED) {
