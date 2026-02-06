@@ -11,6 +11,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 # App Behavior (High Level)
 - Start screen with mode selection (default order: `25/10`, `20/10`, `25/5`, `15/5`), editable via Web UI.
 - App selection screen before app start. Left short press opens app, right short press cycles apps (Pomodoro + Clock). Left long press returns to app select. Last app is auto-opened on boot.
+- Web UI mirrors app select: when the device is in app selection, the home page shows app selection buttons and Pomodoro controls are disabled.
 - Timer screen with phase label, countdown, progress bar, and cycle dots.
 - Clock:
   - Timer screen shows `HH:MM` top-left aligned to the same Y as the `START` label.

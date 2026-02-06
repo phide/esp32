@@ -348,8 +348,22 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += labelForApp(selectedAppIndex);
         html += "</div>";
         html += "</div>";
-        bool pomodoroActive = (selectedAppIndex == APP_POMODORO);
-        if (pomodoroActive) {
+        bool appSelectActive = (screenState == SCREEN_APP_SELECT);
+        bool pomodoroActive = (!appSelectActive && selectedAppIndex == APP_POMODORO);
+        if (appSelectActive) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>App Select</div>";
+          html += "</div>";
+          html += "<div class='stat' style='margin-top:12px'>Select App</div>";
+          html += "<div class='modes'>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_POMODORO) html += " active";
+          html += "' href='/apps?app=0'>Pomodoro</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_CLOCK) html += " active";
+          html += "' href='/apps?app=1'>Clock</a>";
+          html += "</div>";
+        } else if (pomodoroActive) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>";
           if (screenState == SCREEN_CLOCK) {
@@ -384,7 +398,7 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
-        bool canStart = pomodoroActive && !timerActive;
+        bool canStart = pomodoroActive && (screenState == SCREEN_START);
         bool canControl = pomodoroActive && timerActive;
         if (pomodoroActive) {
           html += "<div class='btns'>";
@@ -490,7 +504,7 @@ void updateWifiAndTime(uint32_t nowMs) {
           webServer.send(303);
           return;
         }
-        if (screenState == SCREEN_TIMER) {
+        if (screenState != SCREEN_START) {
           webServer.sendHeader("Location", "/");
           webServer.send(303);
           return;
@@ -591,6 +605,11 @@ void updateWifiAndTime(uint32_t nowMs) {
           webServer.send(303);
           return;
         }
+        if (screenState != SCREEN_START) {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         if (webServer.hasArg("i")) {
           int idx = webServer.arg("i").toInt();
           if (idx >= 0 && idx < (int)modes.size()) {
@@ -627,7 +646,9 @@ void updateWifiAndTime(uint32_t nowMs) {
         }
         doc["remaining"] = timeStr;
         doc["app"] = labelForApp(selectedAppIndex);
-        if (screenState == SCREEN_CLOCK) {
+        if (screenState == SCREEN_APP_SELECT) {
+          doc["screen"] = "App Select";
+        } else if (screenState == SCREEN_CLOCK) {
           doc["screen"] = "Clock";
         } else if (screenState == SCREEN_TIMER) {
           doc["screen"] = "Timer";
