@@ -531,6 +531,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         }
         html += "</div></div></div>";
         html += "<script>"
+                "let aiStreaming=false;"
                 "async function refreshStatus(){"
                 "try{const res=await fetch('/status?ts='+Date.now());"
                 "const s=await res.json();"
@@ -549,7 +550,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "const modeText=document.getElementById('modeText');"
                 "if(modeText){modeText.textContent=s.mode;}"
                 "const aiResp=document.getElementById('aiResponse');"
-                "if(aiResp){aiResp.innerHTML=(s.ai_response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');}"
+                "if(aiResp && !aiStreaming){aiResp.innerHTML=(s.ai_response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');}"
                 "}catch(e){}}"
                 "setInterval(refreshStatus,1000);"
                 "const promptHome=document.getElementById('aiPromptHome');"
@@ -566,9 +567,15 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "});"
                 "const form=document.getElementById('aiHomeForm');"
                 "form.addEventListener('submit',async(e)=>{e.preventDefault();"
-                "const body='prompt='+encodeURIComponent(promptHome.value);"
+                "const prompt=promptHome.value.trim();if(!prompt)return;"
+                "sendTyping(prompt);"
+                "const body='prompt='+encodeURIComponent(prompt);"
                 "const res=await fetch('/ai/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},body});"
-                "if(res.ok){promptHome.value='';sendTyping('');}});"
+                "if(!res.body){return;}"
+                "if(!res.ok){const t=await res.text();const aiResp=document.getElementById('aiResponse');"
+                "if(aiResp){aiResp.textContent=t;}return;}"
+                "promptHome.value='';sendTyping('');"
+                "});"
                 "}"
                 "</script>";
         html += "</body></html>";
@@ -1206,7 +1213,7 @@ void updateWifiAndTime(uint32_t nowMs) {
 
         html += "<div class='card'>";
         html += "<div class='row'><div class='muted'>Chat</div></div>";
-        html += "<form method='post' action='/ai/send' style='margin-top:8px'>";
+        html += "<form id='aiForm' method='post' action='/ai/send' style='margin-top:8px'>";
         html += "<textarea id='aiPrompt' name='prompt' placeholder='Type a message...'></textarea>";
         html += "<div class='row' style='margin-top:10px'>";
         html += "<button class='btn save' type='submit'>Send</button>";
@@ -1229,13 +1236,23 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "if(typingTimer)clearTimeout(typingTimer);"
                 "typingTimer=setTimeout(()=>sendTyping(val),250);"
                 "});"
+                "let aiStreaming=false;"
+                "const form=document.getElementById('aiForm');"
+                "form.addEventListener('submit',async(e)=>{e.preventDefault();"
+                "const prompt=promptEl.value.trim();if(!prompt)return;"
+                "sendTyping(prompt);"
+                "const body='prompt='+encodeURIComponent(prompt);"
+                "const res=await fetch('/ai/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},body});"
+                "if(!res.ok){const t=await res.text();document.getElementById('aiResponse').textContent=t;return;}"
+                "promptEl.value='';sendTyping('');"
+                "});"
                 "async function refresh(){"
+                "if(aiStreaming)return;"
                 "try{const res=await fetch('/ai/status?ts='+Date.now());"
                 "const s=await res.json();"
                 "document.getElementById('aiResponse').innerHTML=(s.response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');"
                 "}catch(e){}}"
                 "setInterval(refresh,1000);"
-                "refresh();"
                 "</script>";
 
         html += "</div></body></html>";
@@ -1321,7 +1338,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         aiGenerating = true;
         aiScrollOffset = 0;
         if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
-          renderAiScreen(true);
+          renderAiScreen(false);
         }
 
         String baseUrl = aiHost;
@@ -1337,7 +1354,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         http.setTimeout(60000);
         StaticJsonDocument<1024> req;
         req["model"] = "llama3.2:3b";
-        req["stream"] = true;
+        req["stream"] = false;
         JsonArray messages = req.createNestedArray("messages");
         if (aiSystemMessage.length() > 0) {
           JsonObject sys = messages.createNestedObject();
@@ -1352,34 +1369,14 @@ void updateWifiAndTime(uint32_t nowMs) {
 
         int code = http.POST(body);
         if (code > 0) {
-          WiFiClient* stream = http.getStreamPtr();
-          String line;
-          while (stream->connected()) {
-            if (!stream->available()) {
-              delay(5);
-              continue;
-            }
-            line = stream->readStringUntil('\n');
-            line.trim();
-            if (line.length() == 0) {
-              continue;
-            }
-            StaticJsonDocument<512> chunk;
-            DeserializationError err = deserializeJson(chunk, line);
-            if (err) {
-              continue;
-            }
-            bool done = chunk["done"] | false;
-            const char* content = chunk["message"]["content"] | "";
-            if (strlen(content) > 0) {
-              aiResponseText += String(content);
-              if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
-                renderAiScreen(false);
-              }
-            }
-            if (done) {
-              break;
-            }
+          String payload = http.getString();
+          StaticJsonDocument<2048> resp;
+          DeserializationError err = deserializeJson(resp, payload);
+          if (!err) {
+            const char* content = resp["message"]["content"] | "";
+            aiResponseText = String(content);
+          } else {
+            aiResponseText = "AI parse error.";
           }
         } else {
           aiResponseText = "AI request failed (" + String(code) + ").";
@@ -1389,7 +1386,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         aiGenerating = false;
         aiScrollOffset = 0;
         if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
-          renderAiScreen(true);
+          renderAiScreen(false);
         }
         if (webServer.header("X-Requested-With") == "fetch") {
           webServer.send(200, "application/json", "{\"ok\":true}");
@@ -1398,6 +1395,7 @@ void updateWifiAndTime(uint32_t nowMs) {
           webServer.send(303);
         }
       });
+
 
       webServer.on("/ai/open", []() {
         webServer.sendHeader("Location", "/ai");
@@ -2952,11 +2950,14 @@ void loop() {
       }
       leftPending = true;
       leftPendingMs = nowMs;
-      leftPendingAction = 0;
+      leftPendingAction = 3;
     }
 
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
-    (void)rightEvent;
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      aiScrollOffset += 1;
+      renderAiScreen(true);
+    }
 
     if (isPressedRaw(leftButton) && (nowMs - leftButton.pressedMs) >= LONG_PRESS_MS) {
       if (nowMs - lastScrollUpMs > 180) {
@@ -2974,7 +2975,13 @@ void loop() {
     }
 
     if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
-      leftPending = false;
+      if (leftPendingAction == 3) {
+        leftPending = false;
+        aiScrollOffset -= 1;
+        renderAiScreen(true);
+      } else {
+        leftPending = false;
+      }
     }
 
     renderAiScreen(false);
