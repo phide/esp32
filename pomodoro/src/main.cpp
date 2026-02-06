@@ -334,7 +334,11 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "</div>";
         bool timerActive = (screenState == SCREEN_TIMER);
         html += "<div class='btns'>";
-        html += "<a class='btn primary' href='/start'>Start</a>";
+        html += "<a class='btn primary";
+        html += (timerActive ? " disabled" : "");
+        html += "' href='";
+        html += (timerActive ? "#" : "/start");
+        html += "'>Start</a>";
         html += "<a class='btn";
         html += (timerActive ? "" : " disabled");
         html += "' href='";
@@ -400,6 +404,11 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/start", []() {
+        if (screenState == SCREEN_TIMER) {
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         activeModeIndex = selectedModeIndex;
         completedFocusSessions = 0;
         screenState = SCREEN_TIMER;
