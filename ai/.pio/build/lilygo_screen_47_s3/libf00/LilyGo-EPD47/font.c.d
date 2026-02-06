@@ -1,0 +1,21 @@
+.pio/build/lilygo_screen_47_s3/libf00/LilyGo-EPD47/font.c.o: \
+ .pio/libdeps/lilygo_screen_47_s3/LilyGo-EPD47/src/font.c \
+ .pio/libdeps/lilygo_screen_47_s3/LilyGo-EPD47/src/epd_driver.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_attr.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h \
+ .pio/libdeps/lilygo_screen_47_s3/LilyGo-EPD47/src/utilities.h \
+ .pio/libdeps/lilygo_screen_47_s3/LilyGo-EPD47/src/zlib/zlib.h \
+ .pio/libdeps/lilygo_screen_47_s3/LilyGo-EPD47/src/zlib/zconf.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_assert.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include/assert.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/heap/include/esp_heap_caps.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/heap/include/multi_heap.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_err.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_compiler.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/log/include/esp_log.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_rom/include/esp_rom_sys.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/reset_reasons.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_rom/include/esp32s3/rom/ets_sys.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/soc.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_bit_defs.h \
+ /Users/leoredeker/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/log/include/esp_log_internal.h
