@@ -10,7 +10,8 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 
 # App Behavior (High Level)
 - Start screen with mode selection (default order: `25/10`, `20/10`, `25/5`, `15/5`), editable via Web UI.
-- App selection screen before app start. Left short press opens app, right short press cycles apps (Pomodoro + Clock). Left long press returns to app select. Last app is auto-opened on boot.
+- App selection screen before app start. Left short press opens app, right short press cycles apps (Pomodoro + Clock + AI when available). Double-press upper button (left) returns to app select. Last app is auto-opened on boot.
+- App selection is now triggered via a fast double-press of the upper (left) button. This replaces the old long-press app-switch behavior.
 - Web UI mirrors app select: when the device is in app selection, the home page shows app selection buttons and Pomodoro controls are disabled.
 - Timer screen with phase label, countdown, progress bar, and cycle dots.
 - Clock:
@@ -18,11 +19,18 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - Start screen shows the clock only after 60s of inactivity (replaces mode label).
   - Clock app shows big time and smaller date; time color is configurable in Web UI.
   - In Clock app, right short press cycles time size (3 sizes), persisted in NVS (`clock_size`).
+- AI App:
+  - Only available on a selected Wi-Fi network (configured in AI settings).
+  - Web UI can send prompts; typing is mirrored live on the device.
+  - AI responses are displayed on the device; long-hold upper button scrolls up, long-hold lower button scrolls down.
 - Wi-Fi indicator: small icon at top-left on the start and app-select screens (connected vs. disconnected color).
 - Last selected mode is stored in NVS and restored on boot (Preferences `pomodoro` / `mode_idx`).
 - Web UI (HTTP) runs on both STA and AP:
   - `GET /` status + controls (Apps pill links to `/apps`, Settings pill links to `/settings`)
   - `GET /settings` links to Apps, Wi-Fi, Time, Time Sync
+  - `GET /ai` AI settings + chat UI
+  - `POST /ai/save`, `/ai/send`, `/ai/typing`
+  - `GET /ai/status`
   - `GET /apps` app selection + clock app color settings
   - `POST /apps/select`, `/apps/clock`
   - `GET /wifi` Wi-Fi manager (add/delete/reorder + AP settings, shows IP)
@@ -43,6 +51,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 - Mode list stored in NVS: `pomodoro` / `modes_json` (editable, reorderable, per-mode colors).
 - Clock app time color stored in NVS: `pomodoro` / `clock_color`.
 - Clock app time size stored in NVS: `pomodoro` / `clock_size`.
+- AI settings stored in NVS: `pomodoro` / `ai_host`, `pomodoro` / `ai_wifi`.
 - Holding both buttons for ~10s clears AP password (reverts to open AP).
 - Left button: start on start screen; pause/resume on timer screen.
 - Right button: short press advances phase; long press resets current phase.

@@ -2,6 +2,7 @@
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <time.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
@@ -23,6 +24,7 @@ const uint32_t WIFI_RETRY_GAP_MS = 2000;
 
 const uint32_t DEBOUNCE_MS = 30;
 const uint32_t LONG_PRESS_MS = 2000;
+const uint32_t DOUBLE_TAP_MS = 350;
 const uint32_t START_IDLE_CLOCK_MS = 60000;
 const char* PREFS_NAMESPACE = "pomodoro";
 const char* PREFS_MODE_KEY = "mode_idx";
@@ -35,6 +37,8 @@ const char* PREFS_AP_PASS_KEY = "ap_pass";
 const char* PREFS_NTP_SERVER_KEY = "ntp_server";
 const char* PREFS_DST_MODE_KEY = "dst_mode";
 const char* PREFS_MODES_KEY = "modes_json";
+const char* PREFS_AI_HOST_KEY = "ai_host";
+const char* PREFS_AI_WIFI_KEY = "ai_wifi";
 const int MAX_WIFI_NETWORKS = 8;
 const int MAX_MODES = 8;
 const char* DEFAULT_AP_SSID = "Timer";
@@ -70,7 +74,8 @@ enum ScreenState {
   SCREEN_APP_SELECT,
   SCREEN_START,
   SCREEN_TIMER,
-  SCREEN_CLOCK
+  SCREEN_CLOCK,
+  SCREEN_AI
 };
 
 enum ButtonEvent {
@@ -94,11 +99,13 @@ enum DstMode {
 
 const char* labelForPhase(Phase phase);
 const char* labelForApp(int appIndex);
+bool isAiAvailable();
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
 void renderStartScreen(bool force, uint32_t nowMs);
 void renderAppSelectScreen(bool force);
 void renderClockScreen(bool force);
+void renderAiScreen(bool force);
 void toggleRunning();
 void advancePhase(bool countFocusCompletion, bool keepRunning);
 void resetCurrentPhase();
@@ -137,6 +144,7 @@ int activeModeIndex = 0;
 int selectedAppIndex = 0;
 const int APP_POMODORO = 0;
 const int APP_CLOCK = 1;
+const int APP_AI = 2;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -165,6 +173,16 @@ String ntpServer = DEFAULT_NTP_SERVER;
 int dstMode = DST_AUTO;
 String clockColor = "";
 int clockSizeIndex = 1;
+String aiHost = "";
+String aiWifiSsid = "";
+String aiTypingText = "";
+String aiResponseText = "";
+int aiScrollOffset = 0;
+bool aiGenerating = false;
+
+bool leftPending = false;
+uint32_t leftPendingMs = 0;
+int leftPendingAction = 0;
 bool apActive = false;
 
 int wifiIndex = 0;
@@ -328,6 +346,11 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='tab";
         if (selectedAppIndex == APP_CLOCK) html += " active";
         html += "' href='/apps?app=1'>Clock</a>";
+        if (isAiAvailable()) {
+          html += "<a class='tab";
+          if (selectedAppIndex == APP_AI) html += " active";
+          html += "' href='/apps?app=2'>AI</a>";
+        }
         html += "</div>";
         html += "<div class='card'><div class='grid";
         if (selectedAppIndex == APP_CLOCK) {
@@ -362,7 +385,17 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "<a class='mode";
           if (selectedAppIndex == APP_CLOCK) html += " active";
           html += "' href='/apps?app=1'>Clock</a>";
+          if (isAiAvailable()) {
+            html += "<a class='mode";
+            if (selectedAppIndex == APP_AI) html += " active";
+            html += "' href='/apps?app=2'>AI</a>";
+          }
           html += "</div>";
+          if (!isAiAvailable() && aiWifiSsid.length() > 0) {
+            html += "<div class='stat' style='margin-top:8px;color:var(--muted)'>AI available only on ";
+            html += aiWifiSsid;
+            html += ".</div>";
+          }
         } else if (pomodoroActive) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>";
@@ -392,9 +425,13 @@ void updateWifiAndTime(uint32_t nowMs) {
           }
           html += "</div>";
           html += "</div>";
-        } else {
+        } else if (selectedAppIndex == APP_CLOCK) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>Clock</div>";
+          html += "</div>";
+        } else if (selectedAppIndex == APP_AI) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>AI</div>";
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
@@ -458,6 +495,9 @@ void updateWifiAndTime(uint32_t nowMs) {
           if (!getLocalTimeInfo(timeStr, sizeof(timeStr), &hour, &minute)) {
             snprintf(timeStr, sizeof(timeStr), "--:--");
           }
+        } else if (selectedAppIndex == APP_AI) {
+          timerSub = "AI";
+          snprintf(timeStr, sizeof(timeStr), "--:--");
         } else {
           uint32_t elapsedMs = currentElapsedMs();
           uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
@@ -635,6 +675,9 @@ void updateWifiAndTime(uint32_t nowMs) {
             snprintf(timeStr, sizeof(timeStr), "--:--");
           }
           doc["timerSub"] = "Time";
+        } else if (selectedAppIndex == APP_AI) {
+          snprintf(timeStr, sizeof(timeStr), "--:--");
+          doc["timerSub"] = "AI";
         } else {
           uint32_t elapsedMs = currentElapsedMs();
           uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
@@ -648,6 +691,8 @@ void updateWifiAndTime(uint32_t nowMs) {
         doc["app"] = labelForApp(selectedAppIndex);
         if (screenState == SCREEN_APP_SELECT) {
           doc["screen"] = "App Select";
+        } else if (screenState == SCREEN_AI) {
+          doc["screen"] = "AI";
         } else if (screenState == SCREEN_CLOCK) {
           doc["screen"] = "Clock";
         } else if (screenState == SCREEN_TIMER) {
@@ -655,7 +700,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else {
           doc["screen"] = "Start";
         }
-        if (selectedAppIndex != APP_POMODORO) {
+        if (selectedAppIndex != APP_POMODORO || screenState == SCREEN_APP_SELECT) {
           doc["phase"] = "--";
           doc["running"] = false;
           doc["mode"] = "--";
@@ -916,6 +961,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='btn' href='/'>Back</a>";
         html += "<a class='btn' href='/apps'>Apps</a>";
         html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
+        html += "<a class='btn' href='/ai'>AI</a>";
         html += "<a class='btn' href='/time'>Time</a>";
         html += "<a class='btn' href='/ntp'>Time Sync</a>";
         html += "</div></div>";
@@ -976,9 +1022,20 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<option value='1'";
         if (selectedAppIndex == APP_CLOCK) html += " selected";
         html += ">Clock</option>";
+        bool aiAvail = isAiAvailable();
+        html += "<option value='2'";
+        if (selectedAppIndex == APP_AI) html += " selected";
+        if (!aiAvail) html += " disabled";
+        html += ">AI</option>";
         html += "</select>";
         html += "<button class='btn save' type='submit'>Open</button></div>";
-        html += "<div class='muted' style='margin-top:6px'>Switching apps resets the Pomodoro timer.</div>";
+        if (!aiAvail && aiWifiSsid.length() > 0) {
+          html += "<div class='muted' style='margin-top:6px'>AI app is only available on Wi-Fi: ";
+          html += aiWifiSsid;
+          html += ".</div>";
+        } else {
+          html += "<div class='muted' style='margin-top:6px'>Switching apps resets the Pomodoro timer.</div>";
+        }
         html += "</form></div>";
 
         String defaultClock = rgbToHex(FOCUS_RGB);
@@ -1024,6 +1081,204 @@ void updateWifiAndTime(uint32_t nowMs) {
           renderClockScreen(true);
         }
         webServer.sendHeader("Location", "/apps");
+        webServer.send(303);
+      });
+
+      webServer.on("/ai", []() {
+        String html;
+        html.reserve(6144);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>AI</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:linear-gradient(160deg,#0b1118,#141d2a);"
+                "color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto;}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px;}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
+                ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);text-decoration:none}"
+                "button.btn{padding:8px 12px;border-radius:10px;border:1px solid #2a3a54;background:#1d2736;"
+                "color:var(--text);font-weight:600}"
+                "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+                "input,select,textarea{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
+                "padding:8px 10px;min-width:220px}"
+                "textarea{min-width:100%;min-height:90px;resize:vertical}"
+                ".muted{color:var(--muted);font-size:12px}"
+                ".response{white-space:pre-wrap;background:#101722;border:1px solid #26344a;border-radius:10px;"
+                "padding:10px;margin-top:10px;min-height:80px}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>AI</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='pill' href='/'>Back</a>";
+        html += "<div class='pill'>Active: ";
+        html += currentWifiLabel();
+        html += "</div>";
+        html += "</div></div>";
+
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>AI Settings</div></div>";
+        html += "<form method='post' action='/ai/save' style='margin-top:8px'>";
+        html += "<div class='row'><select name='ai_wifi'>";
+        html += "<option value=''>Select Wi-Fi</option>";
+        for (int i = 0; i < (int)wifiList.size(); i++) {
+          html += "<option value='";
+          html += wifiList[i].ssid;
+          html += "'";
+          if (wifiList[i].ssid == aiWifiSsid) html += " selected";
+          html += ">";
+          html += wifiList[i].ssid;
+          html += "</option>";
+        }
+        html += "</select>";
+        html += "<input name='ai_host' placeholder='AI Host (e.g. http://192.168.178.200:11434)' value='";
+        html += aiHost;
+        html += "'>";
+        html += "<button class='btn save' type='submit'>Save</button></div>";
+        html += "<div class='muted' style='margin-top:6px'>AI app shows only on the selected Wi-Fi.</div>";
+        html += "</form></div>";
+
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>Chat</div></div>";
+        html += "<form method='post' action='/ai/send' style='margin-top:8px'>";
+        html += "<textarea id='aiPrompt' name='prompt' placeholder='Type a message...'></textarea>";
+        html += "<div class='row' style='margin-top:10px'>";
+        html += "<button class='btn save' type='submit'>Send</button>";
+        html += "</div>";
+        html += "</form>";
+        html += "<div id='aiResponse' class='response'></div>";
+        html += "</div>";
+
+        html += "<script>"
+                "let lastText='';"
+                "let typingTimer=null;"
+                "const promptEl=document.getElementById('aiPrompt');"
+                "function sendTyping(txt){"
+                "fetch('/ai/typing',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+                "body:'text='+encodeURIComponent(txt)});}"
+                "promptEl.addEventListener('input',()=>{"
+                "const val=promptEl.value;"
+                "if(val===lastText)return;"
+                "lastText=val;"
+                "if(typingTimer)clearTimeout(typingTimer);"
+                "typingTimer=setTimeout(()=>sendTyping(val),250);"
+                "});"
+                "async function refresh(){"
+                "try{const res=await fetch('/ai/status?ts='+Date.now());"
+                "const s=await res.json();"
+                "document.getElementById('aiResponse').textContent=s.response||'';"
+                "}catch(e){}}"
+                "setInterval(refresh,1000);"
+                "refresh();"
+                "</script>";
+
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/ai/save", []() {
+        String host = webServer.arg("ai_host");
+        String wifi = webServer.arg("ai_wifi");
+        host.trim();
+        wifi.trim();
+        aiHost = host;
+        aiWifiSsid = wifi;
+        saveWifiConfig();
+        if (!isAiAvailable() && selectedAppIndex == APP_AI) {
+          switchToApp(APP_POMODORO);
+        }
+        webServer.sendHeader("Location", "/ai");
+        webServer.send(303);
+      });
+
+      webServer.on("/ai/typing", []() {
+        String text = webServer.arg("text");
+        aiTypingText = text;
+        aiScrollOffset = 0;
+        if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
+          renderAiScreen(true);
+        }
+        webServer.send(200, "application/json", "{\"ok\":true}");
+      });
+
+      webServer.on("/ai/status", []() {
+        StaticJsonDocument<512> doc;
+        doc["typing"] = aiTypingText;
+        doc["response"] = aiResponseText;
+        doc["generating"] = aiGenerating;
+        String out;
+        serializeJson(doc, out);
+        webServer.send(200, "application/json", out);
+      });
+
+      webServer.on("/ai/send", []() {
+        String prompt = webServer.arg("prompt");
+        prompt.trim();
+        if (prompt.length() == 0) {
+          webServer.sendHeader("Location", "/ai");
+          webServer.send(303);
+          return;
+        }
+        if (aiHost.length() == 0) {
+          aiResponseText = "AI host not configured.";
+          aiTypingText = "";
+          aiGenerating = false;
+          if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
+            renderAiScreen(true);
+          }
+          webServer.sendHeader("Location", "/ai");
+          webServer.send(303);
+          return;
+        }
+        aiTypingText = prompt;
+        aiResponseText = "";
+        aiGenerating = true;
+        aiScrollOffset = 0;
+        if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
+          renderAiScreen(true);
+        }
+
+        String url = aiHost;
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+          url = "http://" + url;
+        }
+        if (!url.endsWith("/")) url += "/";
+        url += "api/generate";
+        HTTPClient http;
+        http.begin(url);
+        http.addHeader("Content-Type", "application/json");
+        StaticJsonDocument<256> req;
+        req["model"] = "llama3.2:3b";
+        req["prompt"] = prompt;
+        req["stream"] = false;
+        String body;
+        serializeJson(req, body);
+        int code = http.POST(body);
+        if (code > 0) {
+          String payload = http.getString();
+          StaticJsonDocument<1024> resp;
+          DeserializationError err = deserializeJson(resp, payload);
+          if (!err) {
+            const char* respText = resp["response"] | "";
+            aiResponseText = String(respText);
+          } else {
+            aiResponseText = "AI parse error.";
+          }
+        } else {
+          aiResponseText = "AI request failed.";
+        }
+        http.end();
+        aiTypingText = "";
+        aiGenerating = false;
+        aiScrollOffset = 0;
+        if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
+          renderAiScreen(true);
+        }
+        webServer.sendHeader("Location", "/ai");
         webServer.send(303);
       });
 
@@ -1541,7 +1796,7 @@ void loadSavedApp() {
   prefs.begin(PREFS_NAMESPACE, true);
   int saved = prefs.getInt(PREFS_APP_KEY, 0);
   prefs.end();
-  if (saved < 0 || saved > APP_CLOCK) {
+  if (saved < 0 || saved > APP_AI) {
     saved = 0;
   }
   selectedAppIndex = saved;
@@ -1554,7 +1809,10 @@ void saveSelectedApp() {
 }
 
 void switchToApp(int appIndex) {
-  if (appIndex < 0 || appIndex > APP_CLOCK) {
+  if (appIndex == APP_AI && !isAiAvailable()) {
+    appIndex = APP_POMODORO;
+  }
+  if (appIndex < 0 || appIndex > APP_AI) {
     appIndex = APP_POMODORO;
   }
   selectedAppIndex = appIndex;
@@ -1563,6 +1821,11 @@ void switchToApp(int appIndex) {
   if (selectedAppIndex == APP_CLOCK) {
     screenState = SCREEN_CLOCK;
     renderClockScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_AI) {
+    screenState = SCREEN_AI;
+    renderAiScreen(true);
     return;
   }
 
@@ -1586,6 +1849,8 @@ void loadWifiConfig() {
   dstMode = prefs.getInt(PREFS_DST_MODE_KEY, DST_AUTO);
   clockColor = prefs.getString(PREFS_CLOCK_COLOR_KEY, "");
   clockSizeIndex = prefs.getInt(PREFS_CLOCK_SIZE_KEY, 1);
+  aiHost = prefs.getString(PREFS_AI_HOST_KEY, "");
+  aiWifiSsid = prefs.getString(PREFS_AI_WIFI_KEY, "");
   prefs.end();
 
   wifiList.clear();
@@ -1637,6 +1902,8 @@ void saveWifiConfig() {
   prefs.putInt(PREFS_DST_MODE_KEY, dstMode);
   prefs.putString(PREFS_CLOCK_COLOR_KEY, clockColor);
   prefs.putInt(PREFS_CLOCK_SIZE_KEY, clockSizeIndex);
+  prefs.putString(PREFS_AI_HOST_KEY, aiHost);
+  prefs.putString(PREFS_AI_WIFI_KEY, aiWifiSsid);
   prefs.end();
 }
 
@@ -1742,7 +2009,20 @@ const char* labelForPhase(Phase phase) {
 }
 
 const char* labelForApp(int appIndex) {
+  if (appIndex == APP_AI) {
+    return "AI";
+  }
   return (appIndex == APP_CLOCK) ? "Clock" : "Pomodoro";
+}
+
+bool isAiAvailable() {
+  if (aiHost.length() == 0 || aiWifiSsid.length() == 0) {
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+  return WiFi.SSID() == aiWifiSsid;
 }
 
 uint16_t colorForPhase(Phase phase) {
@@ -2034,6 +2314,9 @@ void renderStartScreen(bool force, uint32_t nowMs) {
 }
 
 void renderAppSelectScreen(bool force) {
+  if (!isAiAvailable() && selectedAppIndex == APP_AI) {
+    selectedAppIndex = APP_POMODORO;
+  }
   if (!force && selectedAppIndex == lastAppIndex) {
     return;
   }
@@ -2056,7 +2339,12 @@ void renderAppSelectScreen(bool force) {
   tft.setCursor(startX, 6);
   tft.print(startLabel);
 
-  const char* appLabel = (selectedAppIndex == APP_CLOCK) ? "CLOCK" : "POMODORO";
+  const char* appLabel = "POMODORO";
+  if (selectedAppIndex == APP_CLOCK) {
+    appLabel = "CLOCK";
+  } else if (selectedAppIndex == APP_AI) {
+    appLabel = "AI";
+  }
   const int appTextSize = 4;
   tft.setTextSize(appTextSize);
   tft.setTextColor(colorFocus, TFT_BLACK);
@@ -2259,6 +2547,124 @@ void renderClockScreen(bool force) {
   lastSizeIndex = clockSizeIndex;
 }
 
+std::vector<String> wrapText(const String& text, int maxChars) {
+  std::vector<String> lines;
+  String current = "";
+  int start = 0;
+  while (start < text.length()) {
+    int nl = text.indexOf('\n', start);
+    String segment;
+    if (nl >= 0) {
+      segment = text.substring(start, nl);
+      start = nl + 1;
+    } else {
+      segment = text.substring(start);
+      start = text.length();
+    }
+    int segStart = 0;
+    while (segStart < segment.length()) {
+      int space = segment.indexOf(' ', segStart);
+      if (space < 0) space = segment.length();
+      String word = segment.substring(segStart, space);
+      if (word.length() == 0) {
+        segStart = space + 1;
+        continue;
+      }
+      if (current.length() == 0) {
+        current = word;
+      } else if ((int)(current.length() + 1 + word.length()) <= maxChars) {
+        current += " ";
+        current += word;
+      } else {
+        lines.push_back(current);
+        current = word;
+      }
+      segStart = space + 1;
+    }
+    if (current.length() > 0) {
+      lines.push_back(current);
+      current = "";
+    }
+    if (nl >= 0 && segment.length() == 0) {
+      lines.push_back("");
+    }
+  }
+  if (lines.empty()) {
+    lines.push_back("");
+  }
+  return lines;
+}
+
+void renderAiScreen(bool force) {
+  static String lastContent = "";
+  static int lastScroll = -1;
+
+  String content = "";
+  if (aiTypingText.length() > 0) {
+    content = "You:\n" + aiTypingText + "\n\nAI:\n...";
+  } else if (aiResponseText.length() > 0) {
+    content = "AI:\n" + aiResponseText;
+  } else {
+    content = "AI ready.\nOpen the web UI to send a message.";
+  }
+
+  if (!force && content == lastContent && aiScrollOffset == lastScroll) {
+    return;
+  }
+
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  tft.setCursor(6, 6);
+  tft.print("AI");
+  drawWifiIndicator(WiFi.status() == WL_CONNECTED, true);
+
+  const int textSize = 2;
+  const int lineHeight = 8 * textSize + 2;
+  const int topY = 28;
+  const int maxWidth = tft.width() - 12;
+  int maxChars = maxWidth / (6 * textSize);
+  if (maxChars < 10) maxChars = 10;
+  std::vector<String> lines = wrapText(content, maxChars);
+
+  int maxVisible = (tft.height() - topY - 6) / lineHeight;
+  if (maxVisible < 1) maxVisible = 1;
+  int maxScroll = (int)lines.size() - maxVisible;
+  if (maxScroll < 0) maxScroll = 0;
+  if (aiScrollOffset < 0) aiScrollOffset = 0;
+  if (aiScrollOffset > maxScroll) aiScrollOffset = maxScroll;
+
+  tft.setTextSize(textSize);
+  tft.setTextColor(colorMuted, TFT_BLACK);
+  for (int i = 0; i < maxVisible; i++) {
+    int idx = aiScrollOffset + i;
+    if (idx >= (int)lines.size()) break;
+    tft.setCursor(6, topY + i * lineHeight);
+    tft.print(lines[idx]);
+  }
+
+  lastContent = content;
+  lastScroll = aiScrollOffset;
+}
+
+int nextAppIndex(int current) {
+  std::vector<int> apps;
+  apps.push_back(APP_POMODORO);
+  apps.push_back(APP_CLOCK);
+  if (isAiAvailable()) {
+    apps.push_back(APP_AI);
+  }
+  int pos = 0;
+  for (int i = 0; i < (int)apps.size(); i++) {
+    if (apps[i] == current) {
+      pos = i;
+      break;
+    }
+  }
+  pos = (pos + 1) % (int)apps.size();
+  return apps[pos];
+}
+
 void setup() {
   Serial.begin(115200);
   loadWifiConfig();
@@ -2281,7 +2687,13 @@ void setup() {
 
   startPhase(PHASE_FOCUS, false);
   lastInputMs = millis();
-  if (selectedAppIndex == APP_CLOCK) {
+  if (selectedAppIndex == APP_AI && !isAiAvailable()) {
+    selectedAppIndex = APP_POMODORO;
+  }
+  if (selectedAppIndex == APP_AI && isAiAvailable()) {
+    screenState = SCREEN_AI;
+    renderAiScreen(true);
+  } else if (selectedAppIndex == APP_CLOCK) {
     screenState = SCREEN_CLOCK;
     renderClockScreen(true);
   } else {
@@ -2296,6 +2708,12 @@ void loop() {
   updateWifiAndTime(nowMs);
   if (webServerStarted) {
     webServer.handleClient();
+  }
+
+  if (screenState == SCREEN_AI && !isAiAvailable()) {
+    screenState = SCREEN_APP_SELECT;
+    renderAppSelectScreen(true);
+    return;
   }
 
   bool bothPressed = isPressedRaw(leftButton) && isPressedRaw(rightButton);
@@ -2319,11 +2737,15 @@ void loop() {
   }
 
   if (screenState == SCREEN_APP_SELECT) {
+    leftPending = false;
     ButtonEvent leftEvent = updateButton(leftButton, nowMs);
     if (leftEvent == BUTTON_EVENT_SHORT) {
       if (selectedAppIndex == APP_CLOCK) {
         screenState = SCREEN_CLOCK;
         renderClockScreen(true);
+      } else if (selectedAppIndex == APP_AI) {
+        screenState = SCREEN_AI;
+        renderAiScreen(true);
       } else {
         screenState = SCREEN_START;
         lastInputMs = nowMs;
@@ -2334,7 +2756,7 @@ void loop() {
 
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
     if (rightEvent == BUTTON_EVENT_SHORT) {
-      selectedAppIndex = (selectedAppIndex + 1) % 2;
+      selectedAppIndex = nextAppIndex(selectedAppIndex);
       saveSelectedApp();
       renderAppSelectScreen(true);
       return;
@@ -2346,39 +2768,88 @@ void loop() {
 
   if (screenState == SCREEN_CLOCK) {
     ButtonEvent leftEvent = updateButton(leftButton, nowMs);
-    if (leftEvent == BUTTON_EVENT_LONG) {
-      screenState = SCREEN_APP_SELECT;
-      renderAppSelectScreen(true);
-      return;
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+        leftPending = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      leftPending = true;
+      leftPendingMs = nowMs;
+      leftPendingAction = 0;
     }
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
     if (rightEvent == BUTTON_EVENT_SHORT) {
-      int sizeOptions[] = {3, 4, 5};
+      int sizeOptions[] = {4, 5, 7};
       int sizeCount = sizeof(sizeOptions) / sizeof(sizeOptions[0]);
       clockSizeIndex = (clockSizeIndex + 1) % sizeCount;
       saveWifiConfig();
       renderClockScreen(true);
       return;
     }
+    if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
+      leftPending = false;
+    }
     renderClockScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_AI) {
+    static uint32_t lastScrollUpMs = 0;
+    static uint32_t lastScrollDownMs = 0;
+
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+        leftPending = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      leftPending = true;
+      leftPendingMs = nowMs;
+      leftPendingAction = 0;
+    }
+
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    (void)rightEvent;
+
+    if (isPressedRaw(leftButton) && (nowMs - leftButton.pressedMs) >= LONG_PRESS_MS) {
+      if (nowMs - lastScrollUpMs > 180) {
+        aiScrollOffset -= 1;
+        lastScrollUpMs = nowMs;
+        renderAiScreen(true);
+      }
+    }
+    if (isPressedRaw(rightButton) && (nowMs - rightButton.pressedMs) >= LONG_PRESS_MS) {
+      if (nowMs - lastScrollDownMs > 180) {
+        aiScrollOffset += 1;
+        lastScrollDownMs = nowMs;
+        renderAiScreen(true);
+      }
+    }
+
+    if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
+      leftPending = false;
+    }
+
+    renderAiScreen(false);
     return;
   }
 
   if (screenState == SCREEN_START) {
     ButtonEvent leftEvent = updateButton(leftButton, nowMs);
     if (leftEvent == BUTTON_EVENT_SHORT) {
-      activeModeIndex = selectedModeIndex;
-      completedFocusSessions = 0;
-      screenState = SCREEN_TIMER;
-      startPhase(PHASE_FOCUS, true);
-      currentDurationMs = durationForPhase(PHASE_FOCUS);
-      lastInputMs = nowMs;
-      lastRemainingSeconds = 0xFFFFFFFFUL;
-      lastPhase = currentPhase;
-      lastRunning = isRunning;
-      lastCompletedFocus = -1;
-      renderTimerScreen(true);
-      return;
+      if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+        leftPending = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      leftPending = true;
+      leftPendingMs = nowMs;
+      leftPendingAction = 1;
     }
 
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
@@ -2390,10 +2861,23 @@ void loop() {
       lastInputMs = nowMs;
       needsRedraw = true;
     }
-    if (leftEvent == BUTTON_EVENT_LONG) {
-      screenState = SCREEN_APP_SELECT;
-      renderAppSelectScreen(true);
-      return;
+    if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
+      if (leftPendingAction == 1) {
+        leftPending = false;
+        activeModeIndex = selectedModeIndex;
+        completedFocusSessions = 0;
+        screenState = SCREEN_TIMER;
+        startPhase(PHASE_FOCUS, true);
+        currentDurationMs = durationForPhase(PHASE_FOCUS);
+        lastInputMs = nowMs;
+        lastRemainingSeconds = 0xFFFFFFFFUL;
+        lastPhase = currentPhase;
+        lastRunning = isRunning;
+        lastCompletedFocus = -1;
+        renderTimerScreen(true);
+        return;
+      }
+      leftPending = false;
     }
 
     renderStartScreen(needsRedraw, nowMs);
@@ -2402,19 +2886,22 @@ void loop() {
 
   ButtonEvent leftEvent = updateButton(leftButton, nowMs);
   if (leftEvent == BUTTON_EVENT_SHORT) {
-    toggleRunning();
-    needsRedraw = true;
-  } else if (leftEvent == BUTTON_EVENT_LONG) {
-    screenState = SCREEN_APP_SELECT;
-    startPhase(PHASE_FOCUS, false);
-    completedFocusSessions = 0;
-    lastRemainingSeconds = 0xFFFFFFFFUL;
-    lastPhase = currentPhase;
-    lastRunning = isRunning;
-    lastCompletedFocus = -1;
-    lastInputMs = nowMs;
-    renderAppSelectScreen(true);
-    return;
+    if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+      leftPending = false;
+      screenState = SCREEN_APP_SELECT;
+      startPhase(PHASE_FOCUS, false);
+      completedFocusSessions = 0;
+      lastRemainingSeconds = 0xFFFFFFFFUL;
+      lastPhase = currentPhase;
+      lastRunning = isRunning;
+      lastCompletedFocus = -1;
+      lastInputMs = nowMs;
+      renderAppSelectScreen(true);
+      return;
+    }
+    leftPending = true;
+    leftPendingMs = nowMs;
+    leftPendingAction = 2;
   }
 
   ButtonEvent rightEvent = updateButton(rightButton, nowMs);
@@ -2425,6 +2912,16 @@ void loop() {
     bool countFocusCompletion = (currentPhase == PHASE_FOCUS);
     advancePhase(countFocusCompletion, isRunning);
     needsRedraw = true;
+  }
+
+  if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
+    if (leftPendingAction == 2) {
+      leftPending = false;
+      toggleRunning();
+      needsRedraw = true;
+    } else {
+      leftPending = false;
+    }
   }
 
   if (isRunning && currentElapsedMs() >= currentDurationMs) {
