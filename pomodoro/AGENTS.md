@@ -16,6 +16,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - Timer screen shows `HH:MM` top-left aligned to the same Y as the `START` label.
   - Start screen shows the clock only after 60s of inactivity (replaces mode label).
   - Clock app shows big time and smaller date; time color is configurable in Web UI.
+  - In Clock app, right short press cycles time size (3 sizes), persisted in NVS (`clock_size`).
 - Wi-Fi indicator: small icon at top-left on the start and app-select screens (connected vs. disconnected color).
 - Last selected mode is stored in NVS and restored on boot (Preferences `pomodoro` / `mode_idx`).
 - Web UI (HTTP) runs on both STA and AP:
@@ -40,6 +41,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - NTP config: `pomodoro` / `ntp_server`, `dst_mode`
 - Mode list stored in NVS: `pomodoro` / `modes_json` (editable, reorderable, per-mode colors).
 - Clock app time color stored in NVS: `pomodoro` / `clock_color`.
+- Clock app time size stored in NVS: `pomodoro` / `clock_size`.
 - Holding both buttons for ~10s clears AP password (reverts to open AP).
 - Left button: start on start screen; pause/resume on timer screen.
 - Right button: short press advances phase; long press resets current phase.

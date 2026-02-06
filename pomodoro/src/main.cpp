@@ -28,6 +28,7 @@ const char* PREFS_NAMESPACE = "pomodoro";
 const char* PREFS_MODE_KEY = "mode_idx";
 const char* PREFS_APP_KEY = "app_idx";
 const char* PREFS_CLOCK_COLOR_KEY = "clock_color";
+const char* PREFS_CLOCK_SIZE_KEY = "clock_size";
 const char* PREFS_WIFI_KEY = "wifi_json";
 const char* PREFS_AP_SSID_KEY = "ap_ssid";
 const char* PREFS_AP_PASS_KEY = "ap_pass";
@@ -163,6 +164,7 @@ String apPass = "";
 String ntpServer = DEFAULT_NTP_SERVER;
 int dstMode = DST_AUTO;
 String clockColor = "";
+int clockSizeIndex = 1;
 bool apActive = false;
 
 int wifiIndex = 0;
@@ -293,7 +295,9 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "box-shadow:0 10px 30px rgba(0,0,0,.25)}"
                 ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
                 ".grid{display:grid;grid-template-columns:1fr 280px;gap:14px;align-items:start;}"
+                ".grid.one{grid-template-columns:1fr;}"
                 ".panel{border:1px solid #223044;border-radius:12px;background:#111822;padding:12px}"
+                ".panel.time{min-height:140px;display:flex;flex-direction:column;justify-content:center;}"
                 ".timerBox{font-size:58px;font-weight:700;letter-spacing:1px;text-align:center}"
                 ".timerSub{font-size:12px;color:var(--muted);text-align:center;margin-top:4px}"
                 ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);}"
@@ -312,9 +316,24 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "a.mode{padding:8px 10px;border-radius:10px;border:1px solid #2a3a54;text-decoration:none;color:var(--text);"
                 "text-align:center}"
                 "a.mode.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}"
+                ".tabs{display:flex;gap:10px;margin-bottom:12px;align-items:center;}"
+                ".tab{padding:8px 12px;border-radius:999px;border:1px solid #2a3a54;"
+                "background:#1d2736;color:var(--text);text-decoration:none;font-weight:700;font-size:13px}"
+                ".tab.active{background:var(--accent);border-color:#3f7ed1;color:#07111e}"
                 "</style></head><body><div class='wrap'>";
-        html += "<div class='title'>Pomodoro</div>";
-        html += "<div class='card'><div class='grid'>";
+        html += "<div class='tabs'>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_POMODORO) html += " active";
+        html += "' href='/apps?app=0'>Pomodoro</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_CLOCK) html += " active";
+        html += "' href='/apps?app=1'>Clock</a>";
+        html += "</div>";
+        html += "<div class='card'><div class='grid";
+        if (selectedAppIndex == APP_CLOCK) {
+          html += " one";
+        }
+        html += "'>";
         html += "<div>";
         html += "<div class='row'>";
         html += "<a class='pill link ";
@@ -322,7 +341,6 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "' href='/wifi'>Wi-Fi: ";
         html += currentWifiLabel();
         html += "</a>";
-        html += "<a class='pill link' href='/apps'>Apps</a>";
         html += "<a class='pill' href='/settings'>Settings</a>";
         html += "</div>";
         html += "<div class='row' style='margin-top:10px'>";
@@ -330,66 +348,72 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += labelForApp(selectedAppIndex);
         html += "</div>";
         html += "</div>";
-        html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Status</div><div class='big' id='statusText'>";
-        if (screenState == SCREEN_CLOCK) {
-          html += "Clock";
-        } else if (screenState == SCREEN_TIMER) {
-          html += "Timer";
-        } else {
-          html += "Start";
-        }
-        html += "</div>";
-        html += "</div>";
-        html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Phase</div><div class='big' id='phaseText'>";
-        html += labelForPhase(currentPhase);
-        html += "</div>";
-        html += "</div>";
-        html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Running</div><div class='big' id='runningText'>";
-        html += (isRunning ? "Yes" : "No");
-        html += "</div>";
-        html += "</div>";
-        html += "<div class='row' style='margin-top:6px'>";
-        html += "<div class='stat'>Mode</div><div class='big' id='modeText'>";
-        if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
-          html += modes[selectedModeIndex].label;
-        }
-        html += "</div>";
-        html += "</div>";
         bool pomodoroActive = (selectedAppIndex == APP_POMODORO);
+        if (pomodoroActive) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>";
+          if (screenState == SCREEN_CLOCK) {
+            html += "Clock";
+          } else if (screenState == SCREEN_TIMER) {
+            html += "Timer";
+          } else {
+            html += "Start";
+          }
+          html += "</div>";
+          html += "</div>";
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Phase</div><div class='big' id='phaseText'>";
+          html += labelForPhase(currentPhase);
+          html += "</div>";
+          html += "</div>";
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Running</div><div class='big' id='runningText'>";
+          html += (isRunning ? "Yes" : "No");
+          html += "</div>";
+          html += "</div>";
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Mode</div><div class='big' id='modeText'>";
+          if (!modes.empty() && selectedModeIndex >= 0 && selectedModeIndex < (int)modes.size()) {
+            html += modes[selectedModeIndex].label;
+          }
+          html += "</div>";
+          html += "</div>";
+        } else {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>Clock</div>";
+          html += "</div>";
+        }
         bool timerActive = (screenState == SCREEN_TIMER);
         bool canStart = pomodoroActive && !timerActive;
         bool canControl = pomodoroActive && timerActive;
-        html += "<div class='btns'>";
-        html += "<a class='btn primary";
-        html += (canStart ? "" : " disabled");
-        html += "' href='";
-        html += (canStart ? "/start" : "#");
-        html += "'>Start</a>";
-        html += "<a class='btn";
-        html += (canControl ? "" : " disabled");
-        html += "' href='";
-        html += (canControl ? "/pause" : "#");
-        html += "'>Pause/Resume</a>";
-        html += "<a class='btn";
-        html += (canControl ? "" : " disabled");
-        html += "' href='";
-        html += (canControl ? "/next" : "#");
-        html += "'>Next Phase</a>";
-        html += "<a class='btn";
-        html += (canControl ? "" : " disabled");
-        html += "' href='";
-        html += (canControl ? "/reset" : "#");
-        html += "'>Reset Phase</a>";
-        html += "<a class='btn";
-        html += (canControl ? "" : " disabled");
-        html += "' href='";
-        html += (canControl ? "/home" : "#");
-        html += "'>Start Menu</a>";
-        html += "</div>";
         if (pomodoroActive) {
+          html += "<div class='btns'>";
+          html += "<a class='btn primary";
+          html += (canStart ? "" : " disabled");
+          html += "' href='";
+          html += (canStart ? "/start" : "#");
+          html += "'>Start</a>";
+          html += "<a class='btn";
+          html += (canControl ? "" : " disabled");
+          html += "' href='";
+          html += (canControl ? "/pause" : "#");
+          html += "'>Pause/Resume</a>";
+          html += "<a class='btn";
+          html += (canControl ? "" : " disabled");
+          html += "' href='";
+          html += (canControl ? "/next" : "#");
+          html += "'>Next Phase</a>";
+          html += "<a class='btn";
+          html += (canControl ? "" : " disabled");
+          html += "' href='";
+          html += (canControl ? "/reset" : "#");
+          html += "'>Reset Phase</a>";
+          html += "<a class='btn";
+          html += (canControl ? "" : " disabled");
+          html += "' href='";
+          html += (canControl ? "/home" : "#");
+          html += "'>Start Menu</a>";
+          html += "</div>";
           html += "<div class='stat' style='margin-top:12px'>Set Mode</div>";
           html += "<div class='modes'>";
           for (int i = 0; i < (int)modes.size(); i++) {
@@ -406,7 +430,11 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "</div>";
         }
         html += "</div></div>";
-        html += "<div class='panel'>";
+        if (selectedAppIndex == APP_POMODORO) {
+          html += "<div class='panel'>";
+        } else {
+          html += "<div class='panel time'>";
+        }
         char timeStr[6];
         const char* timerSub = "Remaining";
         if (selectedAppIndex == APP_CLOCK) {
@@ -435,13 +463,20 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "async function refreshStatus(){"
                 "try{const res=await fetch('/status?ts='+Date.now());"
                 "const s=await res.json();"
-                "document.getElementById('timerText').textContent=s.remaining;"
-                "document.getElementById('timerSub').textContent=s.timerSub || 'Remaining';"
-                "document.getElementById('appText').textContent=s.app;"
-                "document.getElementById('statusText').textContent=s.screen;"
-                "document.getElementById('phaseText').textContent=s.phase;"
-                "document.getElementById('runningText').textContent=s.running ? 'Yes':'No';"
-                "document.getElementById('modeText').textContent=s.mode;"
+                "const timerText=document.getElementById('timerText');"
+                "if(timerText){timerText.textContent=s.remaining;}"
+                "const timerSub=document.getElementById('timerSub');"
+                "if(timerSub){timerSub.textContent=s.timerSub || 'Remaining';}"
+                "const appText=document.getElementById('appText');"
+                "if(appText){appText.textContent=s.app;}"
+                "const statusText=document.getElementById('statusText');"
+                "if(statusText){statusText.textContent=s.screen;}"
+                "const phaseText=document.getElementById('phaseText');"
+                "if(phaseText){phaseText.textContent=s.phase;}"
+                "const runningText=document.getElementById('runningText');"
+                "if(runningText){runningText.textContent=s.running ? 'Yes':'No';}"
+                "const modeText=document.getElementById('modeText');"
+                "if(modeText){modeText.textContent=s.mode;}"
                 "}catch(e){}}"
                 "setInterval(refreshStatus,1000);"
                 "</script>";
@@ -868,6 +903,13 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/apps", []() {
+        if (webServer.hasArg("app")) {
+          int appIdx = webServer.arg("app").toInt();
+          switchToApp(appIdx);
+          webServer.sendHeader("Location", "/");
+          webServer.send(303);
+          return;
+        }
         String html;
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
@@ -1522,6 +1564,7 @@ void loadWifiConfig() {
   ntpServer = prefs.getString(PREFS_NTP_SERVER_KEY, DEFAULT_NTP_SERVER);
   dstMode = prefs.getInt(PREFS_DST_MODE_KEY, DST_AUTO);
   clockColor = prefs.getString(PREFS_CLOCK_COLOR_KEY, "");
+  clockSizeIndex = prefs.getInt(PREFS_CLOCK_SIZE_KEY, 1);
   prefs.end();
 
   wifiList.clear();
@@ -1572,6 +1615,7 @@ void saveWifiConfig() {
   prefs.putString(PREFS_NTP_SERVER_KEY, ntpServer);
   prefs.putInt(PREFS_DST_MODE_KEY, dstMode);
   prefs.putString(PREFS_CLOCK_COLOR_KEY, clockColor);
+  prefs.putInt(PREFS_CLOCK_SIZE_KEY, clockSizeIndex);
   prefs.end();
 }
 
@@ -2125,6 +2169,7 @@ void renderClockScreen(bool force) {
   static int lastDay = -1;
   static int lastMonth = -1;
   static int lastYear = -1;
+  static int lastSizeIndex = -1;
 
   struct tm timeinfo;
   bool hasTime = getLocalTime(&timeinfo, 50);
@@ -2139,7 +2184,8 @@ void renderClockScreen(bool force) {
                       timeinfo.tm_mday != lastDay || timeinfo.tm_mon != lastMonth ||
                       timeinfo.tm_year != lastYear);
 
-  if (!force && !timeChanged) {
+  bool sizeChanged = (clockSizeIndex != lastSizeIndex);
+  if (!force && !timeChanged && !sizeChanged) {
     return;
   }
 
@@ -2155,18 +2201,33 @@ void renderClockScreen(bool force) {
              timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
   }
 
-  tft.setTextSize(4);
+  int sizeOptions[] = {4, 5, 7};
+  int sizeCount = sizeof(sizeOptions) / sizeof(sizeOptions[0]);
+  int sizeIdx = clockSizeIndex;
+  if (sizeIdx < 0) sizeIdx = 0;
+  if (sizeIdx >= sizeCount) sizeIdx = sizeCount - 1;
+  int timeSize = sizeOptions[sizeIdx];
+  int dateSize = (timeSize >= 7) ? 3 : 2;
+  int timeHeight = 8 * timeSize;
+  int dateHeight = 8 * dateSize;
+  int gap = 6;
+  int blockHeight = timeHeight + gap + dateHeight;
+  int timeY = (tft.height() - blockHeight) / 2;
+  if (timeY < 8) timeY = 8;
+  int dateY = timeY + timeHeight + gap;
+
+  tft.setTextSize(timeSize);
   tft.setTextColor(clockCol, TFT_BLACK);
-  int timeWidth = strlen(timeStr) * 6 * 4;
+  int timeWidth = strlen(timeStr) * 6 * timeSize;
   int timeX = (tft.width() - timeWidth) / 2;
-  tft.setCursor(timeX, 28);
+  tft.setCursor(timeX, timeY);
   tft.print(timeStr);
 
-  tft.setTextSize(2);
+  tft.setTextSize(dateSize);
   tft.setTextColor(colorMuted, TFT_BLACK);
-  int dateWidth = strlen(dateStr) * 6 * 2;
+  int dateWidth = strlen(dateStr) * 6 * dateSize;
   int dateX = (tft.width() - dateWidth) / 2;
-  tft.setCursor(dateX, 70);
+  tft.setCursor(dateX, dateY);
   tft.print(dateStr);
 
   lastHour = hasTime ? timeinfo.tm_hour : -1;
@@ -2174,6 +2235,7 @@ void renderClockScreen(bool force) {
   lastDay = hasTime ? timeinfo.tm_mday : -1;
   lastMonth = hasTime ? timeinfo.tm_mon : -1;
   lastYear = hasTime ? timeinfo.tm_year : -1;
+  lastSizeIndex = clockSizeIndex;
 }
 
 void setup() {
@@ -2266,6 +2328,15 @@ void loop() {
     if (leftEvent == BUTTON_EVENT_LONG) {
       screenState = SCREEN_APP_SELECT;
       renderAppSelectScreen(true);
+      return;
+    }
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      int sizeOptions[] = {3, 4, 5};
+      int sizeCount = sizeof(sizeOptions) / sizeof(sizeOptions[0]);
+      clockSizeIndex = (clockSizeIndex + 1) % sizeCount;
+      saveWifiConfig();
+      renderClockScreen(true);
       return;
     }
     renderClockScreen(false);
