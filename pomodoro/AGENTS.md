@@ -12,8 +12,8 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 - Start screen with mode selection (default order: `25/10`, `20/10`, `25/5`, `15/5`), editable via Web UI.
 - App selection screen before app start. Left short press opens app, right short press cycles apps (Pomodoro + Clock + AI when available + Weather + Snake + Flappy). Double-press upper button (left) returns to app select. Last app is auto-opened on boot.
 - Weather app is always available. It shows current conditions and a small next-hours preview.
-- Snake app: simple grid snake with food + score. Left short turn left, right short turn right. Double-tap left returns to app select. Wi-Fi icon hidden.
-- Flappy app: simple bird + pipe with score. Left or right short flaps; double-tap left returns to app select. Wi-Fi icon hidden.
+- Snake app: simple grid snake with food + score. Left short turn left, right short turn right. Exit gesture is long-press left then short-press left (within ~1.5s). Wi-Fi icon hidden.
+- Flappy app: simple bird + pipe with score. Left or right short flaps. Exit gesture is long-press left then short-press left (within ~1.5s). Wi-Fi icon hidden.
 - App selection is now triggered via a fast double-press of the upper (left) button. This replaces the old long-press app-switch behavior.
 - Web UI mirrors app select: when the device is in app selection, the home page shows app selection buttons and Pomodoro controls are disabled.
 - Timer screen with phase label, countdown, progress bar, and cycle dots.
@@ -33,6 +33,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - Displays a simple icon based on weather code / rain / snow; Wi-Fi icon is hidden in this app.
 - Games:
   - Snake and Flappy are always available, and appear in the web app tabs + app selection list.
+  - Both games use tile/dirty rendering to reduce flicker (partial redraws vs. full-screen clears).
 - Wi-Fi indicator: small icon at top-left on the start and app-select screens (connected vs. disconnected color).
 - Last selected mode is stored in NVS and restored on boot (Preferences `pomodoro` / `mode_idx`).
 - Web UI (HTTP) runs on both STA and AP:

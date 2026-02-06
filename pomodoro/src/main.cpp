@@ -3345,6 +3345,7 @@ void placeSnakeFood() {
     snakeFoodX = 0;
     snakeFoodY = 0;
   }
+  snakeFoodChanged = true;
 }
 
 void initSnakeGame() {
@@ -3365,6 +3366,10 @@ void initSnakeGame() {
   snakeLastStepMs = millis();
   snakeInit = true;
   snakeDirty = true;
+  snakePrevTailValid = false;
+  snakePrevHeadValid = false;
+  snakeGrewLast = false;
+  snakeFoodChanged = true;
 }
 
 void updateSnakeGame(uint32_t nowMs) {
@@ -3407,6 +3412,17 @@ void updateSnakeGame(uint32_t nowMs) {
     nextLen = maxLen;
   }
 
+  snakePrevHeadX = snakeX[0];
+  snakePrevHeadY = snakeY[0];
+  snakePrevHeadValid = true;
+  if (!grew && snakeLen > 0) {
+    snakePrevTailX = snakeX[snakeLen - 1];
+    snakePrevTailY = snakeY[snakeLen - 1];
+    snakePrevTailValid = true;
+  } else {
+    snakePrevTailValid = false;
+  }
+
   for (int i = nextLen - 1; i > 0; i--) {
     int from = i - 1;
     if (from >= snakeLen) {
@@ -3421,6 +3437,7 @@ void updateSnakeGame(uint32_t nowMs) {
     snakeLen = nextLen;
     placeSnakeFood();
   }
+  snakeGrewLast = grew;
   snakeDirty = true;
 }
 
@@ -3428,25 +3445,44 @@ void renderSnakeScreen(bool force) {
   if (!force && !snakeDirty) {
     return;
   }
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setTextColor(colorFocus, TFT_BLACK);
-  tft.setCursor(6, 6);
-  tft.print("SNAKE");
-
   int cols = snakeCols();
   int rows = snakeRows();
   const int cell = 6;
   int top = 18;
 
-  tft.fillRect(snakeFoodX * cell, top + snakeFoodY * cell, cell, cell, colorShort);
-  for (int i = 0; i < snakeLen; i++) {
-    uint16_t c = (i == 0) ? colorFocus : colorMuted;
-    tft.fillRect(snakeX[i] * cell, top + snakeY[i] * cell, cell, cell, c);
+  if (force) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(colorFocus, TFT_BLACK);
+    tft.setCursor(6, 6);
+    tft.print("SNAKE");
+    for (int y = 0; y < rows; y++) {
+      for (int x = 0; x < cols; x++) {
+        tft.fillRect(x * cell, top + y * cell, cell, cell, TFT_BLACK);
+      }
+    }
+    for (int i = 0; i < snakeLen; i++) {
+      uint16_t c = (i == 0) ? colorFocus : colorMuted;
+      tft.fillRect(snakeX[i] * cell, top + snakeY[i] * cell, cell, cell, c);
+    }
+    tft.fillRect(snakeFoodX * cell, top + snakeFoodY * cell, cell, cell, colorShort);
+  } else {
+    if (snakePrevTailValid && !snakeGrewLast) {
+      tft.fillRect(snakePrevTailX * cell, top + snakePrevTailY * cell, cell, cell, TFT_BLACK);
+    }
+    if (snakePrevHeadValid) {
+      tft.fillRect(snakePrevHeadX * cell, top + snakePrevHeadY * cell, cell, cell, colorMuted);
+    }
+    tft.fillRect(snakeX[0] * cell, top + snakeY[0] * cell, cell, cell, colorFocus);
+    if (snakeFoodChanged) {
+      tft.fillRect(snakeFoodX * cell, top + snakeFoodY * cell, cell, cell, colorShort);
+      snakeFoodChanged = false;
+    }
   }
 
   tft.setTextSize(1);
   tft.setTextColor(colorMuted, TFT_BLACK);
+  tft.fillRect(tft.width() - 64, 4, 60, 10, TFT_BLACK);
   tft.setCursor(tft.width() - 60, 6);
   tft.print("Score ");
   int score = snakeLen - 3;
@@ -3472,6 +3508,7 @@ void initFlappyGame() {
   flappyLastMs = millis();
   flappyInit = true;
   flappyDirty = true;
+  flappyPrevValid = false;
 }
 
 void updateFlappyGame(uint32_t nowMs) {
@@ -3485,6 +3522,11 @@ void updateFlappyGame(uint32_t nowMs) {
     return;
   }
   flappyLastMs = nowMs;
+  flappyPrevGapX = flappyGapX;
+  flappyPrevGapY = flappyGapY;
+  flappyPrevY = flappyY;
+  flappyPrevValid = true;
+
   flappyVel += 0.35f;
   flappyY += flappyVel;
 
@@ -3517,15 +3559,23 @@ void renderFlappyScreen(bool force) {
   if (!force && !flappyDirty) {
     return;
   }
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setTextColor(colorFocus, TFT_BLACK);
-  tft.setCursor(6, 6);
-  tft.print("FLAPPY");
-
   int pipeW = 18;
   int gapH = 46;
-  tft.fillRect(flappyGapX, 18, pipeW, flappyGapY - 18, colorMuted);
+  int top = 18;
+
+  if (force) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(colorFocus, TFT_BLACK);
+    tft.setCursor(6, 6);
+    tft.print("FLAPPY");
+  } else if (flappyPrevValid) {
+    tft.fillRect(flappyPrevGapX - 1, top, pipeW + 2, tft.height() - top, TFT_BLACK);
+    int prevBirdY = (int)flappyPrevY;
+    tft.fillRect(36, prevBirdY - 6, 10, 12, TFT_BLACK);
+  }
+
+  tft.fillRect(flappyGapX, top, pipeW, flappyGapY - top, colorMuted);
   tft.fillRect(flappyGapX, flappyGapY + gapH, pipeW,
                tft.height() - (flappyGapY + gapH), colorMuted);
 
@@ -3535,6 +3585,7 @@ void renderFlappyScreen(bool force) {
 
   tft.setTextSize(1);
   tft.setTextColor(colorMuted, TFT_BLACK);
+  tft.fillRect(tft.width() - 64, 4, 60, 10, TFT_BLACK);
   tft.setCursor(tft.width() - 60, 6);
   tft.print("Score ");
   tft.print(flappyScore);
@@ -3749,17 +3800,21 @@ void loop() {
   }
 
   if (screenState == SCREEN_SNAKE) {
-    static uint32_t lastLeftTapMs = 0;
+    static bool exitArmed = false;
+    static uint32_t exitArmedMs = 0;
     leftPending = false;
     ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_LONG) {
+      exitArmed = true;
+      exitArmedMs = nowMs;
+    }
     if (leftEvent == BUTTON_EVENT_SHORT) {
-      if (lastLeftTapMs > 0 && (nowMs - lastLeftTapMs) <= DOUBLE_TAP_MS) {
-        lastLeftTapMs = 0;
+      if (exitArmed && (nowMs - exitArmedMs) < 1500) {
+        exitArmed = false;
         screenState = SCREEN_APP_SELECT;
         renderAppSelectScreen(true);
         return;
       }
-      lastLeftTapMs = nowMs;
       if (snakeGameOver) {
         initSnakeGame();
       } else {
@@ -3767,6 +3822,9 @@ void loop() {
       }
       snakeDirty = true;
       renderSnakeScreen(true);
+    }
+    if (exitArmed && (nowMs - exitArmedMs) >= 1500) {
+      exitArmed = false;
     }
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
     if (rightEvent == BUTTON_EVENT_SHORT) {
@@ -3784,17 +3842,21 @@ void loop() {
   }
 
   if (screenState == SCREEN_FLAPPY) {
-    static uint32_t lastLeftTapMs = 0;
+    static bool exitArmed = false;
+    static uint32_t exitArmedMs = 0;
     leftPending = false;
     ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_LONG) {
+      exitArmed = true;
+      exitArmedMs = nowMs;
+    }
     if (leftEvent == BUTTON_EVENT_SHORT) {
-      if (lastLeftTapMs > 0 && (nowMs - lastLeftTapMs) <= DOUBLE_TAP_MS) {
-        lastLeftTapMs = 0;
+      if (exitArmed && (nowMs - exitArmedMs) < 1500) {
+        exitArmed = false;
         screenState = SCREEN_APP_SELECT;
         renderAppSelectScreen(true);
         return;
       }
-      lastLeftTapMs = nowMs;
       if (flappyGameOver) {
         initFlappyGame();
       } else {
@@ -3802,6 +3864,9 @@ void loop() {
       }
       flappyDirty = true;
       renderFlappyScreen(true);
+    }
+    if (exitArmed && (nowMs - exitArmedMs) >= 1500) {
+      exitArmed = false;
     }
     ButtonEvent rightEvent = updateButton(rightButton, nowMs);
     if (rightEvent == BUTTON_EVENT_SHORT) {
