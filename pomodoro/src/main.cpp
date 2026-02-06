@@ -26,6 +26,7 @@ const uint32_t LONG_PRESS_MS = 2000;
 const uint32_t START_IDLE_CLOCK_MS = 60000;
 const char* PREFS_NAMESPACE = "pomodoro";
 const char* PREFS_MODE_KEY = "mode_idx";
+const char* PREFS_APP_KEY = "app_idx";
 const char* PREFS_WIFI_KEY = "wifi_json";
 const char* PREFS_AP_SSID_KEY = "ap_ssid";
 const char* PREFS_AP_PASS_KEY = "ap_pass";
@@ -64,6 +65,7 @@ enum Phase {
 };
 
 enum ScreenState {
+  SCREEN_APP_SELECT,
   SCREEN_START,
   SCREEN_TIMER
 };
@@ -91,6 +93,7 @@ const char* labelForPhase(Phase phase);
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
 void renderStartScreen(bool force, uint32_t nowMs);
+void renderAppSelectScreen(bool force);
 void toggleRunning();
 void advancePhase(bool countFocusCompletion, bool keepRunning);
 void resetCurrentPhase();
@@ -124,6 +127,7 @@ uint32_t currentDurationMs = 0;
 int completedFocusSessions = 0;
 int selectedModeIndex = 0;
 int activeModeIndex = 0;
+int selectedAppIndex = 0;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -142,6 +146,7 @@ bool lastStartShowClock = false;
 uint32_t lastInputMs = 0;
 bool lastWifiConnected = false;
 bool webServerStarted = false;
+int lastAppIndex = -1;
 
 std::vector<WifiEntry> wifiList;
 std::vector<ModeEntry> modes;
@@ -466,7 +471,7 @@ void updateWifiAndTime(uint32_t nowMs) {
           webServer.send(303);
           return;
         }
-        screenState = SCREEN_START;
+        screenState = SCREEN_APP_SELECT;
         startPhase(PHASE_FOCUS, false);
         completedFocusSessions = 0;
         lastRemainingSeconds = 0xFFFFFFFFUL;
@@ -474,7 +479,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         lastRunning = isRunning;
         lastCompletedFocus = -1;
         lastInputMs = millis();
-        renderStartScreen(true, lastInputMs);
+        renderAppSelectScreen(true);
         webServer.sendHeader("Location", "/");
         webServer.send(303);
       });
@@ -1277,6 +1282,22 @@ void saveSelectedMode() {
   prefs.end();
 }
 
+void loadSavedApp() {
+  prefs.begin(PREFS_NAMESPACE, true);
+  int saved = prefs.getInt(PREFS_APP_KEY, 0);
+  prefs.end();
+  if (saved < 0 || saved > 0) {
+    saved = 0;
+  }
+  selectedAppIndex = saved;
+}
+
+void saveSelectedApp() {
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.putInt(PREFS_APP_KEY, selectedAppIndex);
+  prefs.end();
+}
+
 void loadWifiConfig() {
   prefs.begin(PREFS_NAMESPACE, true);
   String json = prefs.getString(PREFS_WIFI_KEY, "");
@@ -1725,6 +1746,51 @@ void renderStartScreen(bool force, uint32_t nowMs) {
   }
 }
 
+void renderAppSelectScreen(bool force) {
+  if (!force && selectedAppIndex == lastAppIndex) {
+    return;
+  }
+
+  tft.fillScreen(TFT_BLACK);
+
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  const char* title = "APP";
+  int titleWidth = strlen(title) * 6 * 2;
+  int titleX = (tft.width() - titleWidth) / 2;
+  tft.setCursor(titleX, 6);
+  tft.print(title);
+
+  tft.setTextSize(1);
+  tft.setTextColor(colorShort, TFT_BLACK);
+  const char* startLabel = "OPEN";
+  int startWidth = strlen(startLabel) * 6;
+  int startX = tft.width() - startWidth - 6;
+  tft.setCursor(startX, 6);
+  tft.print(startLabel);
+
+  const char* appLabel = "POMODORO";
+  const int appTextSize = 4;
+  tft.setTextSize(appTextSize);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  int appWidth = strlen(appLabel) * 6 * appTextSize;
+  int appHeight = 8 * appTextSize;
+  int appX = (tft.width() - appWidth) / 2;
+  int appY = (tft.height() - appHeight) / 2;
+  tft.setCursor(appX, appY);
+  tft.print(appLabel);
+
+  const char* hint = "APP SELECT";
+  tft.setTextSize(1);
+  tft.setTextColor(colorMuted, TFT_BLACK);
+  int hintWidth = strlen(hint) * 6;
+  int hintX = tft.width() - hintWidth - 6;
+  tft.setCursor(hintX, tft.height() - 18);
+  tft.print(hint);
+
+  lastAppIndex = selectedAppIndex;
+}
+
 void renderTimerScreen(bool force) {
   uint32_t elapsedMs = currentElapsedMs();
   uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
@@ -1832,6 +1898,7 @@ void setup() {
   Serial.begin(115200);
   loadWifiConfig();
   loadModesConfig();
+  loadSavedApp();
   beginWifiSetup();
   loadSavedMode();
 
@@ -1849,7 +1916,8 @@ void setup() {
 
   startPhase(PHASE_FOCUS, false);
   lastInputMs = millis();
-  renderStartScreen(true, lastInputMs);
+  screenState = SCREEN_APP_SELECT;
+  renderAppSelectScreen(true);
 }
 
 void loop() {
@@ -1880,6 +1948,27 @@ void loop() {
     bothPressHandled = false;
   }
 
+  if (screenState == SCREEN_APP_SELECT) {
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      screenState = SCREEN_START;
+      lastInputMs = nowMs;
+      renderStartScreen(true, lastInputMs);
+      return;
+    }
+
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      selectedAppIndex = 0;
+      saveSelectedApp();
+      renderAppSelectScreen(true);
+      return;
+    }
+
+    renderAppSelectScreen(false);
+    return;
+  }
+
   if (screenState == SCREEN_START) {
     ButtonEvent leftEvent = updateButton(leftButton, nowMs);
     if (leftEvent == BUTTON_EVENT_SHORT) {
@@ -1906,6 +1995,11 @@ void loop() {
       lastInputMs = nowMs;
       needsRedraw = true;
     }
+    if (leftEvent == BUTTON_EVENT_LONG) {
+      screenState = SCREEN_APP_SELECT;
+      renderAppSelectScreen(true);
+      return;
+    }
 
     renderStartScreen(needsRedraw, nowMs);
     return;
@@ -1916,7 +2010,7 @@ void loop() {
     toggleRunning();
     needsRedraw = true;
   } else if (leftEvent == BUTTON_EVENT_LONG) {
-    screenState = SCREEN_START;
+    screenState = SCREEN_APP_SELECT;
     startPhase(PHASE_FOCUS, false);
     completedFocusSessions = 0;
     lastRemainingSeconds = 0xFFFFFFFFUL;
@@ -1924,7 +2018,7 @@ void loop() {
     lastRunning = isRunning;
     lastCompletedFocus = -1;
     lastInputMs = nowMs;
-    renderStartScreen(true, lastInputMs);
+    renderAppSelectScreen(true);
     return;
   }
 
