@@ -40,6 +40,9 @@ const char* PREFS_MODES_KEY = "modes_json";
 const char* PREFS_AI_HOST_KEY = "ai_host";
 const char* PREFS_AI_WIFI_KEY = "ai_wifi";
 const char* PREFS_AI_SYSTEM_KEY = "ai_system";
+const float WEATHER_LAT = 53.5737f;
+const float WEATHER_LON = 9.9001f;
+const uint32_t WEATHER_REFRESH_MS = 10UL * 60UL * 1000UL;
 const int MAX_WIFI_NETWORKS = 8;
 const int MAX_MODES = 8;
 const char* DEFAULT_AP_SSID = "Timer";
@@ -76,7 +79,8 @@ enum ScreenState {
   SCREEN_START,
   SCREEN_TIMER,
   SCREEN_CLOCK,
-  SCREEN_AI
+  SCREEN_AI,
+  SCREEN_WEATHER
 };
 
 enum ButtonEvent {
@@ -101,6 +105,8 @@ enum DstMode {
 const char* labelForPhase(Phase phase);
 const char* labelForApp(int appIndex);
 bool isAiAvailable();
+void fetchWeather(bool force);
+void renderWeatherScreen(bool force);
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
 void renderStartScreen(bool force, uint32_t nowMs);
@@ -146,6 +152,7 @@ int selectedAppIndex = 0;
 const int APP_POMODORO = 0;
 const int APP_CLOCK = 1;
 const int APP_AI = 2;
+const int APP_WEATHER = 3;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -181,6 +188,25 @@ String aiTypingText = "";
 String aiResponseText = "";
 int aiScrollOffset = 0;
 bool aiGenerating = false;
+
+struct WeatherData {
+  bool valid;
+  uint32_t updatedMs;
+  float temp;
+  float feels;
+  float wind;
+  float precipProb;
+  float rain;
+  float snow;
+  int code;
+  int nextHour[3];
+  float nextTemp[3];
+  int nextProb[3];
+  int nextCode[3];
+};
+
+WeatherData weather = {false, 0, 0, 0, 0, 0, 0, 0, 0, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+int weatherViewIndex = 0;
 
 bool leftPending = false;
 uint32_t leftPendingMs = 0;
@@ -357,6 +383,9 @@ void updateWifiAndTime(uint32_t nowMs) {
           if (selectedAppIndex == APP_AI) html += " active";
           html += "' href='/apps?app=2'>AI</a>";
         }
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_WEATHER) html += " active";
+        html += "' href='/apps?app=3'>Weather</a>";
         html += "</div>";
         html += "<div class='card'><div class='grid";
         if (selectedAppIndex == APP_CLOCK) {
@@ -397,6 +426,9 @@ void updateWifiAndTime(uint32_t nowMs) {
             if (selectedAppIndex == APP_AI) html += " active";
             html += "' href='/apps?app=2'>AI</a>";
           }
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_WEATHER) html += " active";
+          html += "' href='/apps?app=3'>Weather</a>";
           html += "</div>";
           if (!isAiAvailable() && aiWifiSsid.length() > 0) {
             html += "<div class='stat' style='margin-top:8px;color:var(--muted)'>AI available only on ";
@@ -439,6 +471,10 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else if (selectedAppIndex == APP_AI) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>Ready</div>";
+          html += "</div>";
+        } else if (selectedAppIndex == APP_WEATHER) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>Weather</div>";
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
@@ -495,7 +531,39 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else {
           html += "<div class='panel time'>";
         }
-        if (!aiActive) {
+        if (selectedAppIndex == APP_WEATHER) {
+          String tempStr = weather.valid ? String(weather.temp, 1) + "C" : "--";
+          String feelsStr = weather.valid ? String(weather.feels, 1) + "C" : "--";
+          String windStr = weather.valid ? String(weather.wind, 1) + " km/h" : "--";
+          String popStr = weather.valid ? String((int)weather.precipProb) + "%" : "--";
+          String icon = "SUN";
+          if (weather.valid) {
+            if (weather.snow > 0.0f) {
+              icon = "SNOW";
+            } else if (weather.rain > 0.0f) {
+              icon = "RAIN";
+            } else {
+              int code = weather.code;
+              if (code >= 1 && code <= 3) icon = "CLOUD";
+              if (code >= 45 && code <= 48) icon = "FOG";
+              if (code >= 51 && code <= 67) icon = "RAIN";
+              if (code >= 71 && code <= 77) icon = "SNOW";
+              if (code >= 80 && code <= 99) icon = "STORM";
+            }
+          }
+          html += "<div class='timerBox' id='weatherTemp'>";
+          html += tempStr;
+          html += "</div>";
+          html += "<div class='timerSub' id='weatherMeta'>Feels ";
+          html += feelsStr;
+          html += " · Wind ";
+          html += windStr;
+          html += " · Precip ";
+          html += popStr;
+          html += " · ";
+          html += icon;
+          html += "</div>";
+        } else if (!aiActive) {
           char timeStr[6];
           const char* timerSub = "Remaining";
           if (selectedAppIndex == APP_CLOCK) {
@@ -551,6 +619,20 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "if(modeText){modeText.textContent=s.mode;}"
                 "const aiResp=document.getElementById('aiResponse');"
                 "if(aiResp && !aiStreaming){aiResp.innerHTML=(s.ai_response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');}"
+                "const wTemp=document.getElementById('weatherTemp');"
+                "if(wTemp && s.w_temp!==undefined){wTemp.textContent=(+s.w_temp).toFixed(1)+'C';}"
+                "const wMeta=document.getElementById('weatherMeta');"
+                "if(wMeta && s.w_temp!==undefined){"
+                "let icon='SUN';"
+                "const rain=+s.w_rain||0;const snow=+s.w_snow||0;const code=+s.w_code||0;"
+                "if(snow>0){icon='SNOW';}"
+                "else if(rain>0){icon='RAIN';}"
+                "else if(code>=1 && code<=3){icon='CLOUD';}"
+                "else if(code>=45 && code<=48){icon='FOG';}"
+                "else if(code>=51 && code<=67){icon='RAIN';}"
+                "else if(code>=71 && code<=77){icon='SNOW';}"
+                "else if(code>=80 && code<=99){icon='STORM';}"
+                "wMeta.textContent='Feels '+(+s.w_feels).toFixed(1)+'C · Wind '+(+s.w_wind).toFixed(1)+' km/h · Precip '+Math.round(+s.w_pop)+'% · '+icon;}"
                 "}catch(e){}}"
                 "setInterval(refreshStatus,1000);"
                 "const promptHome=document.getElementById('aiPromptHome');"
@@ -737,6 +819,8 @@ void updateWifiAndTime(uint32_t nowMs) {
           doc["screen"] = "App Select";
         } else if (screenState == SCREEN_AI) {
           doc["screen"] = "AI";
+        } else if (screenState == SCREEN_WEATHER) {
+          doc["screen"] = "Weather";
         } else if (screenState == SCREEN_CLOCK) {
           doc["screen"] = "Clock";
         } else if (screenState == SCREEN_TIMER) {
@@ -774,6 +858,15 @@ void updateWifiAndTime(uint32_t nowMs) {
           typingPreview = typingPreview.substring(typingPreview.length() - 200);
         }
         doc["ai_typing"] = typingPreview;
+        if (weather.valid) {
+          doc["w_temp"] = weather.temp;
+          doc["w_feels"] = weather.feels;
+          doc["w_wind"] = weather.wind;
+          doc["w_pop"] = weather.precipProb;
+          doc["w_code"] = weather.code;
+          doc["w_rain"] = weather.rain;
+          doc["w_snow"] = weather.snow;
+        }
         String out;
         serializeJson(doc, out);
         webServer.send(200, "application/json", out);
@@ -1088,6 +1181,9 @@ void updateWifiAndTime(uint32_t nowMs) {
         if (selectedAppIndex == APP_AI) html += " selected";
         if (!aiAvail) html += " disabled";
         html += ">AI</option>";
+        html += "<option value='3'";
+        if (selectedAppIndex == APP_WEATHER) html += " selected";
+        html += ">Weather</option>";
         html += "</select>";
         html += "<button class='btn save' type='submit'>Open</button></div>";
         if (!aiAvail && aiWifiSsid.length() > 0) {
@@ -1767,6 +1863,7 @@ void updateWifiAndTime(uint32_t nowMs) {
     if (!timeConfigured) {
       applyTimeConfig();
     }
+    fetchWeather(false);
     stopSoftAP();
     wifiConnecting = false;
     return;
@@ -1795,6 +1892,95 @@ void updateWifiAndTime(uint32_t nowMs) {
     wifiIndex = (wifiIndex + 1) % (int)wifiList.size();
     wifiNextAttemptMs = nowMs + WIFI_RETRY_GAP_MS;
   }
+}
+
+void fetchWeather(bool force) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  uint32_t now = millis();
+  if (!force && weather.valid && (now - weather.updatedMs) < WEATHER_REFRESH_MS) {
+    return;
+  }
+
+  String url = "http://api.open-meteo.com/v1/forecast?latitude=";
+  url += String(WEATHER_LAT, 4);
+  url += "&longitude=";
+  url += String(WEATHER_LON, 4);
+  url += "&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,precipitation,rain,snowfall,wind_speed_10m,weather_code";
+  url += "&hourly=temperature_2m,precipitation_probability,weather_code";
+  url += "&timezone=Europe%2FBerlin";
+
+  HTTPClient http;
+  http.begin(url);
+  http.setTimeout(8000);
+  int code = http.GET();
+  if (code <= 0) {
+    http.end();
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(16384);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    return;
+  }
+
+  JsonObject cur = doc["current"];
+  if (!cur.isNull()) {
+    weather.temp = cur["temperature_2m"] | 0.0f;
+    weather.feels = cur["apparent_temperature"] | 0.0f;
+    weather.wind = cur["wind_speed_10m"] | 0.0f;
+    weather.precipProb = cur["precipitation_probability"] | 0.0f;
+    weather.rain = cur["rain"] | 0.0f;
+    weather.snow = cur["snowfall"] | 0.0f;
+    weather.code = cur["weather_code"] | 0;
+  }
+
+  // next hours from hourly arrays
+  JsonArray times = doc["hourly"]["time"].as<JsonArray>();
+  JsonArray temps = doc["hourly"]["temperature_2m"].as<JsonArray>();
+  JsonArray probs = doc["hourly"]["precipitation_probability"].as<JsonArray>();
+  JsonArray codes = doc["hourly"]["weather_code"].as<JsonArray>();
+
+  int index = -1;
+  struct tm timeinfo;
+  bool hasTime = getLocalTime(&timeinfo, 50);
+  if (hasTime) {
+    char tbuf[20];
+    snprintf(tbuf, sizeof(tbuf), "%04d-%02d-%02dT%02d:00",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour);
+    for (int i = 0; i < (int)times.size(); i++) {
+      const char* t = times[i] | "";
+      if (strcmp(t, tbuf) == 0) {
+        index = i;
+        break;
+      }
+    }
+  }
+  if (index < 0) {
+    index = 0;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    int idx = index + 1 + i;
+    if (idx < (int)times.size()) {
+      weather.nextTemp[i] = temps[idx] | 0.0f;
+      weather.nextProb[i] = probs[idx] | 0;
+      weather.nextCode[i] = codes[idx] | 0;
+      weather.nextHour[i] = hasTime ? (timeinfo.tm_hour + 1 + i) % 24 : (i + 1);
+    } else {
+      weather.nextTemp[i] = 0.0f;
+      weather.nextProb[i] = 0;
+      weather.nextCode[i] = 0;
+      weather.nextHour[i] = 0;
+    }
+  }
+
+  weather.updatedMs = now;
+  weather.valid = true;
 }
 
 bool getLocalTimeInfo(char* out, size_t outSize, int* hourOut, int* minuteOut) {
@@ -1916,7 +2102,7 @@ void loadSavedApp() {
   prefs.begin(PREFS_NAMESPACE, true);
   int saved = prefs.getInt(PREFS_APP_KEY, 0);
   prefs.end();
-  if (saved < 0 || saved > APP_AI) {
+  if (saved < 0 || saved > APP_WEATHER) {
     saved = 0;
   }
   selectedAppIndex = saved;
@@ -1932,7 +2118,7 @@ void switchToApp(int appIndex) {
   if (appIndex == APP_AI && !isAiAvailable()) {
     appIndex = APP_POMODORO;
   }
-  if (appIndex < 0 || appIndex > APP_AI) {
+  if (appIndex < 0 || appIndex > APP_WEATHER) {
     appIndex = APP_POMODORO;
   }
   selectedAppIndex = appIndex;
@@ -1946,6 +2132,12 @@ void switchToApp(int appIndex) {
   if (selectedAppIndex == APP_AI) {
     screenState = SCREEN_AI;
     renderAiScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_WEATHER) {
+    screenState = SCREEN_WEATHER;
+    fetchWeather(true);
+    renderWeatherScreen(true);
     return;
   }
 
@@ -2133,6 +2325,9 @@ const char* labelForPhase(Phase phase) {
 const char* labelForApp(int appIndex) {
   if (appIndex == APP_AI) {
     return "AI";
+  }
+  if (appIndex == APP_WEATHER) {
+    return "Weather";
   }
   return (appIndex == APP_CLOCK) ? "Clock" : "Pomodoro";
 }
@@ -2466,6 +2661,8 @@ void renderAppSelectScreen(bool force) {
     appLabel = "CLOCK";
   } else if (selectedAppIndex == APP_AI) {
     appLabel = "AI";
+  } else if (selectedAppIndex == APP_WEATHER) {
+    appLabel = "WEATHER";
   }
   const int appTextSize = 4;
   tft.setTextSize(appTextSize);
@@ -2788,6 +2985,110 @@ void renderAiScreen(bool force) {
   lastScroll = aiScrollOffset;
 }
 
+void drawWeatherIcon(int code, float rain, float snow, int x, int y) {
+  uint16_t c = colorShort;
+  if (snow > 0.0f) {
+    tft.drawLine(x, y, x + 12, y + 12, c);
+    tft.drawLine(x + 12, y, x, y + 12, c);
+    tft.drawLine(x + 6, y - 2, x + 6, y + 14, c);
+    tft.drawLine(x - 2, y + 6, x + 14, y + 6, c);
+    return;
+  }
+  if (rain > 0.0f) {
+    tft.fillRoundRect(x, y + 2, 14, 8, 3, c);
+    tft.drawLine(x + 3, y + 12, x + 1, y + 16, c);
+    tft.drawLine(x + 8, y + 12, x + 6, y + 16, c);
+    return;
+  }
+  if (code >= 45 && code <= 48) {
+    tft.drawFastHLine(x, y + 5, 14, c);
+    tft.drawFastHLine(x, y + 9, 14, c);
+    return;
+  }
+  if (code >= 1 && code <= 3) {
+    tft.fillCircle(x + 6, y + 6, 5, c);
+    return;
+  }
+  if (code >= 80 && code <= 99) {
+    tft.fillTriangle(x + 4, y, x + 10, y, x + 6, y + 10, c);
+    tft.drawLine(x + 6, y + 10, x + 6, y + 16, c);
+    return;
+  }
+  // default sun
+  tft.fillCircle(x + 6, y + 6, 5, c);
+}
+
+void renderWeatherScreen(bool force) {
+  static uint32_t lastDrawMs = 0;
+  if (!force && (millis() - lastDrawMs) < 1000) {
+    return;
+  }
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  tft.setCursor(6, 6);
+  tft.print("WEATHER");
+  drawWifiIndicator(WiFi.status() == WL_CONNECTED, true);
+
+  int tempX = 10;
+  int tempY = 28;
+  tft.setTextSize(3);
+  tft.setTextColor(colorShort, TFT_BLACK);
+  if (weather.valid) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1fC", weather.temp);
+    tft.setCursor(tempX, tempY);
+    tft.print(buf);
+  } else {
+    tft.setCursor(tempX, tempY);
+    tft.print("--.-C");
+  }
+  drawWeatherIcon(weather.code, weather.rain, weather.snow, 170, 28);
+
+  tft.setTextSize(1);
+  tft.setTextColor(colorMuted, TFT_BLACK);
+  char line1[32];
+  char line2[32];
+  if (weather.valid) {
+    snprintf(line1, sizeof(line1), "Feels %.1fC  Wind %.1f", weather.feels, weather.wind);
+    snprintf(line2, sizeof(line2), "Precip %d%%", (int)weather.precipProb);
+  } else {
+    snprintf(line1, sizeof(line1), "No data");
+    line2[0] = '\0';
+  }
+  tft.setCursor(10, 58);
+  tft.print(line1);
+  if (line2[0]) {
+    tft.setCursor(10, 70);
+    tft.print(line2);
+  }
+
+  // next 3 hours
+  tft.setCursor(10, 88);
+  tft.print("Next:");
+  for (int i = 0; i < 3; i++) {
+    int x = 10 + i * 70;
+    int y = 102;
+    char hbuf[8];
+    if (weather.valid) {
+      snprintf(hbuf, sizeof(hbuf), "%02d", weather.nextHour[i]);
+      tft.setCursor(x, y);
+      tft.print(hbuf);
+      tft.print(":00");
+      tft.setCursor(x, y + 12);
+      char tbuf[8];
+      snprintf(tbuf, sizeof(tbuf), "%.0fC", weather.nextTemp[i]);
+      tft.print(tbuf);
+      tft.setCursor(x, y + 24);
+      tft.print(String(weather.nextProb[i]) + "%");
+    } else {
+      tft.setCursor(x, y);
+      tft.print("--");
+    }
+  }
+  lastDrawMs = millis();
+}
+
 int nextAppIndex(int current) {
   std::vector<int> apps;
   apps.push_back(APP_POMODORO);
@@ -2795,6 +3096,7 @@ int nextAppIndex(int current) {
   if (isAiAvailable()) {
     apps.push_back(APP_AI);
   }
+  apps.push_back(APP_WEATHER);
   int pos = 0;
   for (int i = 0; i < (int)apps.size(); i++) {
     if (apps[i] == current) {
@@ -2837,6 +3139,9 @@ void setup() {
   } else if (selectedAppIndex == APP_CLOCK) {
     screenState = SCREEN_CLOCK;
     renderClockScreen(true);
+  } else if (selectedAppIndex == APP_WEATHER) {
+    screenState = SCREEN_WEATHER;
+    renderWeatherScreen(true);
   } else {
     screenState = SCREEN_START;
     renderStartScreen(true, lastInputMs);
@@ -2887,6 +3192,9 @@ void loop() {
       } else if (selectedAppIndex == APP_AI) {
         screenState = SCREEN_AI;
         renderAiScreen(true);
+      } else if (selectedAppIndex == APP_WEATHER) {
+        screenState = SCREEN_WEATHER;
+        renderWeatherScreen(true);
       } else {
         screenState = SCREEN_START;
         lastInputMs = nowMs;
@@ -2933,6 +3241,26 @@ void loop() {
       leftPending = false;
     }
     renderClockScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_WEATHER) {
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+        leftPending = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      leftPending = true;
+      leftPendingMs = nowMs;
+      leftPendingAction = 4;
+    }
+    if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
+      leftPending = false;
+    }
+    renderWeatherScreen(false);
     return;
   }
 
