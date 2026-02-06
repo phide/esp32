@@ -22,14 +22,15 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 - AI App:
   - Only available on a selected Wi-Fi network (configured in AI settings).
   - Web UI can send prompts; typing is mirrored live on the device.
-  - AI responses are displayed on the device; long-hold upper button scrolls up, long-hold lower button scrolls down.
+  - AI responses stream to the device; long-hold upper button scrolls up, long-hold lower button scrolls down.
+  - System Message is configurable and sent as the first message on each request.
 - Wi-Fi indicator: small icon at top-left on the start and app-select screens (connected vs. disconnected color).
 - Last selected mode is stored in NVS and restored on boot (Preferences `pomodoro` / `mode_idx`).
 - Web UI (HTTP) runs on both STA and AP:
   - `GET /` status + controls (Apps pill links to `/apps`, Settings pill links to `/settings`)
   - `GET /settings` links to Apps, Wi-Fi, Time, Time Sync
-  - `GET /ai` AI settings + chat UI
-  - `POST /ai/save`, `/ai/send`, `/ai/typing`
+  - `GET /ai` AI settings + system message + chat UI
+  - `POST /ai/save`, `/ai/system`, `/ai/send`, `/ai/typing`
   - `GET /ai/status`
   - `GET /apps` app selection + clock app color settings
   - `POST /apps/select`, `/apps/clock`
@@ -52,6 +53,7 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
 - Clock app time color stored in NVS: `pomodoro` / `clock_color`.
 - Clock app time size stored in NVS: `pomodoro` / `clock_size`.
 - AI settings stored in NVS: `pomodoro` / `ai_host`, `pomodoro` / `ai_wifi`.
+- AI system message stored in NVS: `pomodoro` / `ai_system`.
 - Holding both buttons for ~10s clears AP password (reverts to open AP).
 - Left button: start on start screen; pause/resume on timer screen.
 - Right button: short press advances phase; long press resets current phase.

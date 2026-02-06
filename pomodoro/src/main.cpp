@@ -39,6 +39,7 @@ const char* PREFS_DST_MODE_KEY = "dst_mode";
 const char* PREFS_MODES_KEY = "modes_json";
 const char* PREFS_AI_HOST_KEY = "ai_host";
 const char* PREFS_AI_WIFI_KEY = "ai_wifi";
+const char* PREFS_AI_SYSTEM_KEY = "ai_system";
 const int MAX_WIFI_NETWORKS = 8;
 const int MAX_MODES = 8;
 const char* DEFAULT_AP_SSID = "Timer";
@@ -175,6 +176,7 @@ String clockColor = "";
 int clockSizeIndex = 1;
 String aiHost = "";
 String aiWifiSsid = "";
+String aiSystemMessage = "";
 String aiTypingText = "";
 String aiResponseText = "";
 int aiScrollOffset = 0;
@@ -334,6 +336,10 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "a.mode{padding:8px 10px;border-radius:10px;border:1px solid #2a3a54;text-decoration:none;color:var(--text);"
                 "text-align:center}"
                 "a.mode.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}"
+                "textarea{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
+                "padding:8px 10px;width:100%;min-height:80px;resize:vertical}"
+                ".response{white-space:pre-wrap;background:#101722;border:1px solid #26344a;border-radius:10px;"
+                "padding:10px;margin-top:10px;min-height:80px}"
                 ".tabs{display:flex;gap:10px;margin-bottom:12px;align-items:center;}"
                 ".tab{padding:8px 12px;border-radius:999px;border:1px solid #2a3a54;"
                 "background:#1d2736;color:var(--text);text-decoration:none;font-weight:700;font-size:13px}"
@@ -373,6 +379,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "</div>";
         bool appSelectActive = (screenState == SCREEN_APP_SELECT);
         bool pomodoroActive = (!appSelectActive && selectedAppIndex == APP_POMODORO);
+        bool aiActive = (!appSelectActive && selectedAppIndex == APP_AI);
         if (appSelectActive) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>App Select</div>";
@@ -432,6 +439,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else if (selectedAppIndex == APP_AI) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>AI</div>";
+          html += "<div class='stat' id='aiState' style='margin-left:6px;color:var(--muted)'>Ready</div>";
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
@@ -483,35 +491,45 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "</div></div>";
         if (selectedAppIndex == APP_POMODORO) {
           html += "<div class='panel'>";
+        } else if (selectedAppIndex == APP_AI) {
+          html += "<div class='panel'>";
         } else {
           html += "<div class='panel time'>";
         }
-        char timeStr[6];
-        const char* timerSub = "Remaining";
-        if (selectedAppIndex == APP_CLOCK) {
-          timerSub = "Time";
-          int hour = -1;
-          int minute = -1;
-          if (!getLocalTimeInfo(timeStr, sizeof(timeStr), &hour, &minute)) {
-            snprintf(timeStr, sizeof(timeStr), "--:--");
+        if (!aiActive) {
+          char timeStr[6];
+          const char* timerSub = "Remaining";
+          if (selectedAppIndex == APP_CLOCK) {
+            timerSub = "Time";
+            int hour = -1;
+            int minute = -1;
+            if (!getLocalTimeInfo(timeStr, sizeof(timeStr), &hour, &minute)) {
+              snprintf(timeStr, sizeof(timeStr), "--:--");
+            }
+          } else {
+            uint32_t elapsedMs = currentElapsedMs();
+            uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
+            uint32_t remainingSeconds = remainingMs / 1000;
+            uint32_t minutes = remainingSeconds / 60;
+            uint32_t seconds = remainingSeconds % 60;
+            snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
           }
-        } else if (selectedAppIndex == APP_AI) {
-          timerSub = "AI";
-          snprintf(timeStr, sizeof(timeStr), "--:--");
-        } else {
-          uint32_t elapsedMs = currentElapsedMs();
-          uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
-          uint32_t remainingSeconds = remainingMs / 1000;
-          uint32_t minutes = remainingSeconds / 60;
-          uint32_t seconds = remainingSeconds % 60;
-          snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
+          html += "<div class='timerBox' id='timerText'>";
+          html += timeStr;
+          html += "</div>";
+          html += "<div class='timerSub' id='timerSub'>";
+          html += timerSub;
+          html += "</div>";
         }
-        html += "<div class='timerBox' id='timerText'>";
-        html += timeStr;
-        html += "</div>";
-        html += "<div class='timerSub' id='timerSub'>";
-        html += timerSub;
-        html += "</div>";
+        if (aiActive) {
+          html += "<form method='post' action='/ai/send' style='margin-top:10px'>";
+          html += "<textarea id='aiPromptHome' name='prompt' placeholder='Type a message...'></textarea>";
+          html += "<div class='row' style='margin-top:8px'>";
+          html += "<button class='btn primary' type='submit'>Send</button>";
+          html += "</div>";
+          html += "</form>";
+          html += "<div id='aiResponse' class='response'></div>";
+        }
         html += "</div></div></div>";
         html += "<script>"
                 "async function refreshStatus(){"
@@ -531,8 +549,25 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "if(runningText){runningText.textContent=s.running ? 'Yes':'No';}"
                 "const modeText=document.getElementById('modeText');"
                 "if(modeText){modeText.textContent=s.mode;}"
+                "const aiState=document.getElementById('aiState');"
+                "if(aiState){aiState.textContent=s.ai_state || 'Ready';}"
+                "const aiResp=document.getElementById('aiResponse');"
+                "if(aiResp){aiResp.textContent=s.ai_response || '';}"
                 "}catch(e){}}"
                 "setInterval(refreshStatus,1000);"
+                "const promptHome=document.getElementById('aiPromptHome');"
+                "if(promptHome){"
+                "let lastText='';let typingTimer=null;"
+                "function sendTyping(txt){"
+                "fetch('/ai/typing',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+                "body:'text='+encodeURIComponent(txt)});}"
+                "promptHome.addEventListener('input',()=>{"
+                "const val=promptHome.value;"
+                "if(val===lastText)return;lastText=val;"
+                "if(typingTimer)clearTimeout(typingTimer);"
+                "typingTimer=setTimeout(()=>sendTyping(val),250);"
+                "});"
+                "}"
                 "</script>";
         html += "</body></html>";
         webServer.send(200, "text/html", html);
@@ -666,7 +701,7 @@ void updateWifiAndTime(uint32_t nowMs) {
       });
 
       webServer.on("/status", []() {
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<1024> doc;
         char timeStr[6];
         if (selectedAppIndex == APP_CLOCK) {
           int hour = -1;
@@ -713,6 +748,23 @@ void updateWifiAndTime(uint32_t nowMs) {
             doc["mode"] = "--";
           }
         }
+        String aiState = "Ready";
+        if (aiGenerating) {
+          aiState = "Generating";
+        } else if (aiTypingText.length() > 0) {
+          aiState = "Writing";
+        }
+        doc["ai_state"] = aiState;
+        String aiPreview = aiResponseText;
+        if (aiPreview.length() > 800) {
+          aiPreview = aiPreview.substring(aiPreview.length() - 800);
+        }
+        doc["ai_response"] = aiPreview;
+        String typingPreview = aiTypingText;
+        if (typingPreview.length() > 200) {
+          typingPreview = typingPreview.substring(typingPreview.length() - 200);
+        }
+        doc["ai_typing"] = typingPreview;
         String out;
         serializeJson(doc, out);
         webServer.send(200, "application/json", out);
@@ -1140,7 +1192,15 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "'>";
         html += "<button class='btn save' type='submit'>Save</button></div>";
         html += "<div class='muted' style='margin-top:6px'>AI app shows only on the selected Wi-Fi.</div>";
-        html += "</form></div>";
+        html += "</form>";
+        html += "<form method='post' action='/ai/system' style='margin-top:10px'>";
+        html += "<div class='row'><div class='muted'>System Message</div></div>";
+        html += "<textarea name='system' placeholder='System message...'>";
+        html += aiSystemMessage;
+        html += "</textarea>";
+        html += "<div class='row' style='margin-top:10px'><button class='btn save' type='submit'>Save</button></div>";
+        html += "</form>";
+        html += "</div>";
 
         html += "<div class='card'>";
         html += "<div class='row'><div class='muted'>Chat</div></div>";
@@ -1195,6 +1255,14 @@ void updateWifiAndTime(uint32_t nowMs) {
         webServer.send(303);
       });
 
+      webServer.on("/ai/system", []() {
+        String sys = webServer.arg("system");
+        aiSystemMessage = sys;
+        saveWifiConfig();
+        webServer.sendHeader("Location", "/ai");
+        webServer.send(303);
+      });
+
       webServer.on("/ai/typing", []() {
         String text = webServer.arg("text");
         aiTypingText = text;
@@ -1207,8 +1275,16 @@ void updateWifiAndTime(uint32_t nowMs) {
 
       webServer.on("/ai/status", []() {
         StaticJsonDocument<512> doc;
-        doc["typing"] = aiTypingText;
-        doc["response"] = aiResponseText;
+        String typingPreview = aiTypingText;
+        if (typingPreview.length() > 200) {
+          typingPreview = typingPreview.substring(typingPreview.length() - 200);
+        }
+        String aiPreview = aiResponseText;
+        if (aiPreview.length() > 1200) {
+          aiPreview = aiPreview.substring(aiPreview.length() - 1200);
+        }
+        doc["typing"] = typingPreview;
+        doc["response"] = aiPreview;
         doc["generating"] = aiGenerating;
         String out;
         serializeJson(doc, out);
@@ -1242,34 +1318,65 @@ void updateWifiAndTime(uint32_t nowMs) {
           renderAiScreen(true);
         }
 
-        String url = aiHost;
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-          url = "http://" + url;
+        String baseUrl = aiHost;
+        if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+          baseUrl = "http://" + baseUrl;
         }
-        if (!url.endsWith("/")) url += "/";
-        url += "api/generate";
+        if (!baseUrl.endsWith("/")) baseUrl += "/";
+        String url = baseUrl + "api/chat";
+
         HTTPClient http;
         http.begin(url);
         http.addHeader("Content-Type", "application/json");
-        StaticJsonDocument<256> req;
+        http.setTimeout(60000);
+        StaticJsonDocument<1024> req;
         req["model"] = "llama3.2:3b";
-        req["prompt"] = prompt;
-        req["stream"] = false;
+        req["stream"] = true;
+        JsonArray messages = req.createNestedArray("messages");
+        if (aiSystemMessage.length() > 0) {
+          JsonObject sys = messages.createNestedObject();
+          sys["role"] = "system";
+          sys["content"] = aiSystemMessage;
+        }
+        JsonObject user = messages.createNestedObject();
+        user["role"] = "user";
+        user["content"] = prompt;
         String body;
         serializeJson(req, body);
+
         int code = http.POST(body);
         if (code > 0) {
-          String payload = http.getString();
-          StaticJsonDocument<1024> resp;
-          DeserializationError err = deserializeJson(resp, payload);
-          if (!err) {
-            const char* respText = resp["response"] | "";
-            aiResponseText = String(respText);
-          } else {
-            aiResponseText = "AI parse error.";
+          WiFiClient* stream = http.getStreamPtr();
+          String line;
+          while (stream->connected()) {
+            if (!stream->available()) {
+              delay(5);
+              continue;
+            }
+            line = stream->readStringUntil('\n');
+            line.trim();
+            if (line.length() == 0) {
+              continue;
+            }
+            StaticJsonDocument<512> chunk;
+            DeserializationError err = deserializeJson(chunk, line);
+            if (err) {
+              continue;
+            }
+            bool done = chunk["done"] | false;
+            const char* content = chunk["message"]["content"] | "";
+            if (strlen(content) > 0) {
+              aiResponseText += String(content);
+              if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
+                renderAiScreen(true);
+              }
+            }
+            if (done) {
+              break;
+            }
           }
         } else {
-          aiResponseText = "AI request failed.";
+          aiResponseText = "AI request failed (" + String(code) + ").";
         }
         http.end();
         aiTypingText = "";
@@ -1278,6 +1385,11 @@ void updateWifiAndTime(uint32_t nowMs) {
         if (selectedAppIndex == APP_AI && screenState == SCREEN_AI) {
           renderAiScreen(true);
         }
+        webServer.sendHeader("Location", "/ai");
+        webServer.send(303);
+      });
+
+      webServer.on("/ai/open", []() {
         webServer.sendHeader("Location", "/ai");
         webServer.send(303);
       });
@@ -1851,6 +1963,7 @@ void loadWifiConfig() {
   clockSizeIndex = prefs.getInt(PREFS_CLOCK_SIZE_KEY, 1);
   aiHost = prefs.getString(PREFS_AI_HOST_KEY, "");
   aiWifiSsid = prefs.getString(PREFS_AI_WIFI_KEY, "");
+  aiSystemMessage = prefs.getString(PREFS_AI_SYSTEM_KEY, "");
   prefs.end();
 
   wifiList.clear();
@@ -1904,6 +2017,7 @@ void saveWifiConfig() {
   prefs.putInt(PREFS_CLOCK_SIZE_KEY, clockSizeIndex);
   prefs.putString(PREFS_AI_HOST_KEY, aiHost);
   prefs.putString(PREFS_AI_WIFI_KEY, aiWifiSsid);
+  prefs.putString(PREFS_AI_SYSTEM_KEY, aiSystemMessage);
   prefs.end();
 }
 
