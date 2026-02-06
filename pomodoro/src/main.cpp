@@ -80,7 +80,9 @@ enum ScreenState {
   SCREEN_TIMER,
   SCREEN_CLOCK,
   SCREEN_AI,
-  SCREEN_WEATHER
+  SCREEN_WEATHER,
+  SCREEN_SNAKE,
+  SCREEN_FLAPPY
 };
 
 enum ButtonEvent {
@@ -107,6 +109,14 @@ const char* labelForApp(int appIndex);
 bool isAiAvailable();
 void fetchWeather(bool force);
 void renderWeatherScreen(bool force);
+int snakeCols();
+int snakeRows();
+void initSnakeGame();
+void updateSnakeGame(uint32_t nowMs);
+void renderSnakeScreen(bool force);
+void initFlappyGame();
+void updateFlappyGame(uint32_t nowMs);
+void renderFlappyScreen(bool force);
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
 void renderStartScreen(bool force, uint32_t nowMs);
@@ -153,6 +163,8 @@ const int APP_POMODORO = 0;
 const int APP_CLOCK = 1;
 const int APP_AI = 2;
 const int APP_WEATHER = 3;
+const int APP_SNAKE = 4;
+const int APP_FLAPPY = 5;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -207,6 +219,41 @@ struct WeatherData {
 
 WeatherData weather = {false, 0, 0, 0, 0, 0, 0, 0, 0, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 int weatherViewIndex = 0;
+
+// Snake game state
+bool snakeInit = false;
+int snakeDir = 0; // 0=up,1=right,2=down,3=left
+int snakeLen = 3;
+int snakeX[128];
+int snakeY[128];
+int snakeFoodX = 0;
+int snakeFoodY = 0;
+uint32_t snakeLastStepMs = 0;
+bool snakeGameOver = false;
+bool snakeDirty = true;
+int snakePrevHeadX = 0;
+int snakePrevHeadY = 0;
+int snakePrevTailX = 0;
+int snakePrevTailY = 0;
+bool snakePrevTailValid = false;
+bool snakePrevHeadValid = false;
+bool snakeGrewLast = false;
+bool snakeFoodChanged = false;
+
+// Flappy game state
+bool flappyInit = false;
+float flappyY = 40.0f;
+float flappyVel = 0.0f;
+int flappyGapY = 40;
+int flappyGapX = 120;
+int flappyScore = 0;
+bool flappyGameOver = false;
+uint32_t flappyLastMs = 0;
+bool flappyDirty = true;
+int flappyPrevGapX = 0;
+int flappyPrevGapY = 0;
+float flappyPrevY = 0.0f;
+bool flappyPrevValid = false;
 
 bool leftPending = false;
 uint32_t leftPendingMs = 0;
@@ -386,6 +433,12 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='tab";
         if (selectedAppIndex == APP_WEATHER) html += " active";
         html += "' href='/apps?app=3'>Weather</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_SNAKE) html += " active";
+        html += "' href='/apps?app=4'>Snake</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_FLAPPY) html += " active";
+        html += "' href='/apps?app=5'>Flappy</a>";
         html += "</div>";
         html += "<div class='card'><div class='grid";
         if (selectedAppIndex == APP_CLOCK) {
@@ -429,6 +482,12 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "<a class='mode";
           if (selectedAppIndex == APP_WEATHER) html += " active";
           html += "' href='/apps?app=3'>Weather</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_SNAKE) html += " active";
+          html += "' href='/apps?app=4'>Snake</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_FLAPPY) html += " active";
+          html += "' href='/apps?app=5'>Flappy</a>";
           html += "</div>";
           if (!isAiAvailable() && aiWifiSsid.length() > 0) {
             html += "<div class='stat' style='margin-top:8px;color:var(--muted)'>AI available only on ";
@@ -475,6 +534,14 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else if (selectedAppIndex == APP_WEATHER) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>Weather</div>";
+          html += "</div>";
+        } else if (selectedAppIndex == APP_SNAKE) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>Snake</div>";
+          html += "</div>";
+        } else if (selectedAppIndex == APP_FLAPPY) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>Flappy</div>";
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
@@ -563,6 +630,11 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += " · ";
           html += icon;
           html += "</div>";
+        } else if (selectedAppIndex == APP_SNAKE || selectedAppIndex == APP_FLAPPY) {
+          html += "<div class='timerBox' id='gameLabel'>";
+          html += labelForApp(selectedAppIndex);
+          html += "</div>";
+          html += "<div class='timerSub' id='gameScore'>Score 0</div>";
         } else if (!aiActive) {
           char timeStr[6];
           const char* timerSub = "Remaining";
@@ -617,6 +689,10 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "if(runningText){runningText.textContent=s.running ? 'Yes':'No';}"
                 "const modeText=document.getElementById('modeText');"
                 "if(modeText){modeText.textContent=s.mode;}"
+                "const gameLabel=document.getElementById('gameLabel');"
+                "if(gameLabel){gameLabel.textContent=s.app;}"
+                "const gameScore=document.getElementById('gameScore');"
+                "if(gameScore && s.game_score!==undefined){gameScore.textContent='Score '+s.game_score;}"
                 "const aiResp=document.getElementById('aiResponse');"
                 "if(aiResp && !aiStreaming){aiResp.innerHTML=(s.ai_response||'').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');}"
                 "const wTemp=document.getElementById('weatherTemp');"
@@ -804,6 +880,9 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else if (selectedAppIndex == APP_AI) {
           snprintf(timeStr, sizeof(timeStr), "--:--");
           doc["timerSub"] = "AI";
+        } else if (selectedAppIndex == APP_SNAKE || selectedAppIndex == APP_FLAPPY) {
+          snprintf(timeStr, sizeof(timeStr), "--:--");
+          doc["timerSub"] = "Score";
         } else {
           uint32_t elapsedMs = currentElapsedMs();
           uint32_t remainingMs = (elapsedMs >= currentDurationMs) ? 0 : (currentDurationMs - elapsedMs);
@@ -821,6 +900,10 @@ void updateWifiAndTime(uint32_t nowMs) {
           doc["screen"] = "AI";
         } else if (screenState == SCREEN_WEATHER) {
           doc["screen"] = "Weather";
+        } else if (screenState == SCREEN_SNAKE) {
+          doc["screen"] = "Snake";
+        } else if (screenState == SCREEN_FLAPPY) {
+          doc["screen"] = "Flappy";
         } else if (screenState == SCREEN_CLOCK) {
           doc["screen"] = "Clock";
         } else if (screenState == SCREEN_TIMER) {
@@ -848,6 +931,13 @@ void updateWifiAndTime(uint32_t nowMs) {
           aiState = "Writing";
         }
         doc["ai_state"] = aiState;
+        if (selectedAppIndex == APP_SNAKE) {
+          int score = snakeLen - 3;
+          if (score < 0) score = 0;
+          doc["game_score"] = score;
+        } else if (selectedAppIndex == APP_FLAPPY) {
+          doc["game_score"] = flappyScore;
+        }
         String aiPreview = aiResponseText;
         if (aiPreview.length() > 800) {
           aiPreview = aiPreview.substring(aiPreview.length() - 800);
@@ -1184,6 +1274,12 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<option value='3'";
         if (selectedAppIndex == APP_WEATHER) html += " selected";
         html += ">Weather</option>";
+        html += "<option value='4'";
+        if (selectedAppIndex == APP_SNAKE) html += " selected";
+        html += ">Snake</option>";
+        html += "<option value='5'";
+        if (selectedAppIndex == APP_FLAPPY) html += " selected";
+        html += ">Flappy</option>";
         html += "</select>";
         html += "<button class='btn save' type='submit'>Open</button></div>";
         if (!aiAvail && aiWifiSsid.length() > 0) {
@@ -2102,7 +2198,7 @@ void loadSavedApp() {
   prefs.begin(PREFS_NAMESPACE, true);
   int saved = prefs.getInt(PREFS_APP_KEY, 0);
   prefs.end();
-  if (saved < 0 || saved > APP_WEATHER) {
+  if (saved < 0 || saved > APP_FLAPPY) {
     saved = 0;
   }
   selectedAppIndex = saved;
@@ -2118,7 +2214,7 @@ void switchToApp(int appIndex) {
   if (appIndex == APP_AI && !isAiAvailable()) {
     appIndex = APP_POMODORO;
   }
-  if (appIndex < 0 || appIndex > APP_WEATHER) {
+  if (appIndex < 0 || appIndex > APP_FLAPPY) {
     appIndex = APP_POMODORO;
   }
   selectedAppIndex = appIndex;
@@ -2138,6 +2234,18 @@ void switchToApp(int appIndex) {
     screenState = SCREEN_WEATHER;
     fetchWeather(true);
     renderWeatherScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_SNAKE) {
+    screenState = SCREEN_SNAKE;
+    initSnakeGame();
+    renderSnakeScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_FLAPPY) {
+    screenState = SCREEN_FLAPPY;
+    initFlappyGame();
+    renderFlappyScreen(true);
     return;
   }
 
@@ -2328,6 +2436,12 @@ const char* labelForApp(int appIndex) {
   }
   if (appIndex == APP_WEATHER) {
     return "Weather";
+  }
+  if (appIndex == APP_SNAKE) {
+    return "Snake";
+  }
+  if (appIndex == APP_FLAPPY) {
+    return "Flappy";
   }
   return (appIndex == APP_CLOCK) ? "Clock" : "Pomodoro";
 }
@@ -2663,6 +2777,10 @@ void renderAppSelectScreen(bool force) {
     appLabel = "AI";
   } else if (selectedAppIndex == APP_WEATHER) {
     appLabel = "WEATHER";
+  } else if (selectedAppIndex == APP_SNAKE) {
+    appLabel = "SNAKE";
+  } else if (selectedAppIndex == APP_FLAPPY) {
+    appLabel = "FLAPPY";
   }
   const int appTextSize = 4;
   tft.setTextSize(appTextSize);
@@ -3189,6 +3307,247 @@ void renderWeatherScreen(bool force) {
   lastNextProb2 = weather.nextProb[2];
 }
 
+int snakeCols() {
+  return tft.width() / 6;
+}
+
+int snakeRows() {
+  int playHeight = tft.height() - 18;
+  return playHeight / 6;
+}
+
+void placeSnakeFood() {
+  int cols = snakeCols();
+  int rows = snakeRows();
+  if (cols <= 1 || rows <= 1) {
+    snakeFoodX = 0;
+    snakeFoodY = 0;
+    return;
+  }
+  bool placed = false;
+  for (int tries = 0; tries < 200 && !placed; tries++) {
+    int fx = random(0, cols);
+    int fy = random(0, rows);
+    bool onSnake = false;
+    for (int i = 0; i < snakeLen; i++) {
+      if (snakeX[i] == fx && snakeY[i] == fy) {
+        onSnake = true;
+        break;
+      }
+    }
+    if (!onSnake) {
+      snakeFoodX = fx;
+      snakeFoodY = fy;
+      placed = true;
+    }
+  }
+  if (!placed) {
+    snakeFoodX = 0;
+    snakeFoodY = 0;
+  }
+}
+
+void initSnakeGame() {
+  int cols = snakeCols();
+  int rows = snakeRows();
+  if (cols < 6) cols = 6;
+  if (rows < 6) rows = 6;
+  snakeLen = 3;
+  snakeDir = 1;
+  snakeGameOver = false;
+  int startX = cols / 2;
+  int startY = rows / 2;
+  for (int i = 0; i < snakeLen; i++) {
+    snakeX[i] = startX - i;
+    snakeY[i] = startY;
+  }
+  placeSnakeFood();
+  snakeLastStepMs = millis();
+  snakeInit = true;
+  snakeDirty = true;
+}
+
+void updateSnakeGame(uint32_t nowMs) {
+  if (snakeGameOver) {
+    return;
+  }
+  if (!snakeInit) {
+    initSnakeGame();
+  }
+  if (nowMs - snakeLastStepMs < 180) {
+    return;
+  }
+  snakeLastStepMs = nowMs;
+  int headX = snakeX[0];
+  int headY = snakeY[0];
+  if (snakeDir == 0) headY -= 1;
+  if (snakeDir == 1) headX += 1;
+  if (snakeDir == 2) headY += 1;
+  if (snakeDir == 3) headX -= 1;
+
+  int cols = snakeCols();
+  int rows = snakeRows();
+  if (headX < 0 || headY < 0 || headX >= cols || headY >= rows) {
+    snakeGameOver = true;
+    snakeDirty = true;
+    return;
+  }
+  for (int i = 0; i < snakeLen; i++) {
+    if (snakeX[i] == headX && snakeY[i] == headY) {
+      snakeGameOver = true;
+      snakeDirty = true;
+      return;
+    }
+  }
+
+  bool grew = (headX == snakeFoodX && headY == snakeFoodY);
+  int maxLen = (int)(sizeof(snakeX) / sizeof(snakeX[0]));
+  int nextLen = snakeLen + (grew ? 1 : 0);
+  if (nextLen > maxLen) {
+    nextLen = maxLen;
+  }
+
+  for (int i = nextLen - 1; i > 0; i--) {
+    int from = i - 1;
+    if (from >= snakeLen) {
+      from = snakeLen - 1;
+    }
+    snakeX[i] = snakeX[from];
+    snakeY[i] = snakeY[from];
+  }
+  snakeX[0] = headX;
+  snakeY[0] = headY;
+  if (grew) {
+    snakeLen = nextLen;
+    placeSnakeFood();
+  }
+  snakeDirty = true;
+}
+
+void renderSnakeScreen(bool force) {
+  if (!force && !snakeDirty) {
+    return;
+  }
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  tft.setCursor(6, 6);
+  tft.print("SNAKE");
+
+  int cols = snakeCols();
+  int rows = snakeRows();
+  const int cell = 6;
+  int top = 18;
+
+  tft.fillRect(snakeFoodX * cell, top + snakeFoodY * cell, cell, cell, colorShort);
+  for (int i = 0; i < snakeLen; i++) {
+    uint16_t c = (i == 0) ? colorFocus : colorMuted;
+    tft.fillRect(snakeX[i] * cell, top + snakeY[i] * cell, cell, cell, c);
+  }
+
+  tft.setTextSize(1);
+  tft.setTextColor(colorMuted, TFT_BLACK);
+  tft.setCursor(tft.width() - 60, 6);
+  tft.print("Score ");
+  int score = snakeLen - 3;
+  if (score < 0) score = 0;
+  tft.print(score);
+
+  if (snakeGameOver) {
+    tft.setTextSize(2);
+    tft.setTextColor(colorShort, TFT_BLACK);
+    tft.setCursor(20, tft.height() - 30);
+    tft.print("GAME OVER");
+  }
+  snakeDirty = false;
+}
+
+void initFlappyGame() {
+  flappyY = tft.height() / 2.0f;
+  flappyVel = 0.0f;
+  flappyGapX = tft.width();
+  flappyGapY = tft.height() / 2 - 20;
+  flappyScore = 0;
+  flappyGameOver = false;
+  flappyLastMs = millis();
+  flappyInit = true;
+  flappyDirty = true;
+}
+
+void updateFlappyGame(uint32_t nowMs) {
+  if (flappyGameOver) {
+    return;
+  }
+  if (!flappyInit) {
+    initFlappyGame();
+  }
+  if (nowMs - flappyLastMs < 40) {
+    return;
+  }
+  flappyLastMs = nowMs;
+  flappyVel += 0.35f;
+  flappyY += flappyVel;
+
+  flappyGapX -= 2;
+  int pipeW = 18;
+  int gapH = 46;
+  if (flappyGapX < -pipeW) {
+    flappyGapX = tft.width() + 10;
+    int minGap = 18;
+    int maxGap = tft.height() - gapH - 18;
+    if (maxGap < minGap) maxGap = minGap;
+    flappyGapY = random(minGap, maxGap);
+    flappyScore += 1;
+  }
+
+  int birdX = 40;
+  int birdY = (int)flappyY;
+  if (birdY < 2 || birdY > tft.height() - 4) {
+    flappyGameOver = true;
+  }
+  if (!flappyGameOver && birdX + 4 >= flappyGapX && birdX - 4 <= flappyGapX + pipeW) {
+    if (birdY < flappyGapY || birdY > flappyGapY + gapH) {
+      flappyGameOver = true;
+    }
+  }
+  flappyDirty = true;
+}
+
+void renderFlappyScreen(bool force) {
+  if (!force && !flappyDirty) {
+    return;
+  }
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  tft.setCursor(6, 6);
+  tft.print("FLAPPY");
+
+  int pipeW = 18;
+  int gapH = 46;
+  tft.fillRect(flappyGapX, 18, pipeW, flappyGapY - 18, colorMuted);
+  tft.fillRect(flappyGapX, flappyGapY + gapH, pipeW,
+               tft.height() - (flappyGapY + gapH), colorMuted);
+
+  int birdX = 40;
+  int birdY = (int)flappyY;
+  tft.fillCircle(birdX, birdY, 4, colorShort);
+
+  tft.setTextSize(1);
+  tft.setTextColor(colorMuted, TFT_BLACK);
+  tft.setCursor(tft.width() - 60, 6);
+  tft.print("Score ");
+  tft.print(flappyScore);
+
+  if (flappyGameOver) {
+    tft.setTextSize(2);
+    tft.setTextColor(colorShort, TFT_BLACK);
+    tft.setCursor(20, tft.height() - 30);
+    tft.print("GAME OVER");
+  }
+  flappyDirty = false;
+}
+
 int nextAppIndex(int current) {
   std::vector<int> apps;
   apps.push_back(APP_POMODORO);
@@ -3197,6 +3556,8 @@ int nextAppIndex(int current) {
     apps.push_back(APP_AI);
   }
   apps.push_back(APP_WEATHER);
+  apps.push_back(APP_SNAKE);
+  apps.push_back(APP_FLAPPY);
   int pos = 0;
   for (int i = 0; i < (int)apps.size(); i++) {
     if (apps[i] == current) {
@@ -3210,6 +3571,7 @@ int nextAppIndex(int current) {
 
 void setup() {
   Serial.begin(115200);
+  randomSeed(micros());
   loadWifiConfig();
   loadModesConfig();
   loadSavedApp();
@@ -3242,6 +3604,14 @@ void setup() {
   } else if (selectedAppIndex == APP_WEATHER) {
     screenState = SCREEN_WEATHER;
     renderWeatherScreen(true);
+  } else if (selectedAppIndex == APP_SNAKE) {
+    screenState = SCREEN_SNAKE;
+    initSnakeGame();
+    renderSnakeScreen(true);
+  } else if (selectedAppIndex == APP_FLAPPY) {
+    screenState = SCREEN_FLAPPY;
+    initFlappyGame();
+    renderFlappyScreen(true);
   } else {
     screenState = SCREEN_START;
     renderStartScreen(true, lastInputMs);
@@ -3295,6 +3665,14 @@ void loop() {
       } else if (selectedAppIndex == APP_WEATHER) {
         screenState = SCREEN_WEATHER;
         renderWeatherScreen(true);
+      } else if (selectedAppIndex == APP_SNAKE) {
+        screenState = SCREEN_SNAKE;
+        initSnakeGame();
+        renderSnakeScreen(true);
+      } else if (selectedAppIndex == APP_FLAPPY) {
+        screenState = SCREEN_FLAPPY;
+        initFlappyGame();
+        renderFlappyScreen(true);
       } else {
         screenState = SCREEN_START;
         lastInputMs = nowMs;
@@ -3367,6 +3745,76 @@ void loop() {
       leftPending = false;
     }
     renderWeatherScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_SNAKE) {
+    static uint32_t lastLeftTapMs = 0;
+    leftPending = false;
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (lastLeftTapMs > 0 && (nowMs - lastLeftTapMs) <= DOUBLE_TAP_MS) {
+        lastLeftTapMs = 0;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      lastLeftTapMs = nowMs;
+      if (snakeGameOver) {
+        initSnakeGame();
+      } else {
+        snakeDir = (snakeDir + 3) % 4;
+      }
+      snakeDirty = true;
+      renderSnakeScreen(true);
+    }
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (snakeGameOver) {
+        initSnakeGame();
+      } else {
+        snakeDir = (snakeDir + 1) % 4;
+      }
+      snakeDirty = true;
+      renderSnakeScreen(true);
+    }
+    updateSnakeGame(nowMs);
+    renderSnakeScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_FLAPPY) {
+    static uint32_t lastLeftTapMs = 0;
+    leftPending = false;
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (lastLeftTapMs > 0 && (nowMs - lastLeftTapMs) <= DOUBLE_TAP_MS) {
+        lastLeftTapMs = 0;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      lastLeftTapMs = nowMs;
+      if (flappyGameOver) {
+        initFlappyGame();
+      } else {
+        flappyVel = -3.8f;
+      }
+      flappyDirty = true;
+      renderFlappyScreen(true);
+    }
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (flappyGameOver) {
+        initFlappyGame();
+      } else {
+        flappyVel = -3.8f;
+      }
+      flappyDirty = true;
+      renderFlappyScreen(true);
+    }
+    updateFlappyGame(nowMs);
+    renderFlappyScreen(false);
     return;
   }
 
