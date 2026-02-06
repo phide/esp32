@@ -27,7 +27,8 @@ Wi-Fi is managed via NVS: it tries stored SSIDs in priority order, syncs time vi
   - System Message is configurable and sent as the first message on each request.
 - Weather App:
   - Uses Open-Meteo with fixed coordinates (53.5737, 9.9001) and refreshes about every 10 minutes when online.
-  - Displays temperature, feels-like, wind, precipitation chance, and a simple icon based on weather code / rain / snow.
+  - Two views toggled by the lower button: overview with temp + next 3 hours, and a details view (feels-like, wind, precip chance).
+  - Displays a simple icon based on weather code / rain / snow; Wi-Fi icon is hidden in this app.
 - Wi-Fi indicator: small icon at top-left on the start and app-select screens (connected vs. disconnected color).
 - Last selected mode is stored in NVS and restored on boot (Preferences `pomodoro` / `mode_idx`).
 - Web UI (HTTP) runs on both STA and AP:

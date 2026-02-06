@@ -2988,105 +2988,161 @@ void renderAiScreen(bool force) {
 void drawWeatherIcon(int code, float rain, float snow, int x, int y) {
   uint16_t c = colorShort;
   if (snow > 0.0f) {
-    tft.drawLine(x, y, x + 12, y + 12, c);
-    tft.drawLine(x + 12, y, x, y + 12, c);
-    tft.drawLine(x + 6, y - 2, x + 6, y + 14, c);
-    tft.drawLine(x - 2, y + 6, x + 14, y + 6, c);
+    tft.drawLine(x + 2, y + 2, x + 14, y + 14, c);
+    tft.drawLine(x + 14, y + 2, x + 2, y + 14, c);
+    tft.drawLine(x + 8, y, x + 8, y + 16, c);
+    tft.drawLine(x, y + 8, x + 16, y + 8, c);
     return;
   }
   if (rain > 0.0f) {
-    tft.fillRoundRect(x, y + 2, 14, 8, 3, c);
-    tft.drawLine(x + 3, y + 12, x + 1, y + 16, c);
-    tft.drawLine(x + 8, y + 12, x + 6, y + 16, c);
+    tft.fillRoundRect(x + 2, y + 2, 14, 8, 3, c);
+    tft.drawLine(x + 5, y + 12, x + 3, y + 16, c);
+    tft.drawLine(x + 10, y + 12, x + 8, y + 16, c);
     return;
   }
   if (code >= 45 && code <= 48) {
-    tft.drawFastHLine(x, y + 5, 14, c);
-    tft.drawFastHLine(x, y + 9, 14, c);
+    tft.drawFastHLine(x + 2, y + 6, 14, c);
+    tft.drawFastHLine(x + 2, y + 10, 14, c);
     return;
   }
   if (code >= 1 && code <= 3) {
-    tft.fillCircle(x + 6, y + 6, 5, c);
+    tft.fillCircle(x + 8, y + 8, 6, c);
     return;
   }
   if (code >= 80 && code <= 99) {
-    tft.fillTriangle(x + 4, y, x + 10, y, x + 6, y + 10, c);
-    tft.drawLine(x + 6, y + 10, x + 6, y + 16, c);
+    tft.fillTriangle(x + 4, y + 2, x + 12, y + 2, x + 8, y + 12, c);
+    tft.drawLine(x + 8, y + 12, x + 8, y + 16, c);
     return;
   }
-  // default sun
-  tft.fillCircle(x + 6, y + 6, 5, c);
+  tft.fillCircle(x + 8, y + 8, 6, c);
 }
 
 void renderWeatherScreen(bool force) {
   static uint32_t lastDrawMs = 0;
-  if (!force && (millis() - lastDrawMs) < 1000) {
+  static int lastView = -1;
+  static bool lastValid = false;
+  static float lastTemp = 999;
+  static float lastFeels = 999;
+  static float lastWind = 999;
+  static float lastPop = 999;
+  static int lastCode = -1;
+  static float lastRain = -1;
+  static float lastSnow = -1;
+  static int lastHour0 = -1;
+  static int lastHour1 = -1;
+  static int lastHour2 = -1;
+  static float lastNextTemp0 = 999;
+  static float lastNextTemp1 = 999;
+  static float lastNextTemp2 = 999;
+  static int lastNextProb0 = -1;
+  static int lastNextProb1 = -1;
+  static int lastNextProb2 = -1;
+
+  if (!force && (millis() - lastDrawMs) < 800) {
     return;
   }
+
+  bool changed = force || lastView != weatherViewIndex || lastValid != weather.valid ||
+                 lastTemp != weather.temp || lastFeels != weather.feels || lastWind != weather.wind ||
+                 lastPop != weather.precipProb || lastCode != weather.code ||
+                 lastRain != weather.rain || lastSnow != weather.snow ||
+                 lastHour0 != weather.nextHour[0] || lastHour1 != weather.nextHour[1] || lastHour2 != weather.nextHour[2] ||
+                 lastNextTemp0 != weather.nextTemp[0] || lastNextTemp1 != weather.nextTemp[1] || lastNextTemp2 != weather.nextTemp[2] ||
+                 lastNextProb0 != weather.nextProb[0] || lastNextProb1 != weather.nextProb[1] || lastNextProb2 != weather.nextProb[2];
+
+  if (!changed) {
+    return;
+  }
+
   tft.fillScreen(TFT_BLACK);
   tft.setTextSize(2);
   tft.setTextColor(colorFocus, TFT_BLACK);
   tft.setCursor(6, 6);
   tft.print("WEATHER");
-  drawWifiIndicator(WiFi.status() == WL_CONNECTED, true);
+  int iconX = 200;
+  int iconY = 10;
 
-  int tempX = 10;
-  int tempY = 28;
-  tft.setTextSize(3);
-  tft.setTextColor(colorShort, TFT_BLACK);
-  if (weather.valid) {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.1fC", weather.temp);
-    tft.setCursor(tempX, tempY);
-    tft.print(buf);
-  } else {
-    tft.setCursor(tempX, tempY);
-    tft.print("--.-C");
-  }
-  drawWeatherIcon(weather.code, weather.rain, weather.snow, 170, 28);
-
-  tft.setTextSize(1);
-  tft.setTextColor(colorMuted, TFT_BLACK);
-  char line1[32];
-  char line2[32];
-  if (weather.valid) {
-    snprintf(line1, sizeof(line1), "Feels %.1fC  Wind %.1f", weather.feels, weather.wind);
-    snprintf(line2, sizeof(line2), "Precip %d%%", (int)weather.precipProb);
-  } else {
-    snprintf(line1, sizeof(line1), "No data");
-    line2[0] = '\0';
-  }
-  tft.setCursor(10, 58);
-  tft.print(line1);
-  if (line2[0]) {
-    tft.setCursor(10, 70);
-    tft.print(line2);
-  }
-
-  // next 3 hours
-  tft.setCursor(10, 88);
-  tft.print("Next:");
-  for (int i = 0; i < 3; i++) {
-    int x = 10 + i * 70;
-    int y = 102;
-    char hbuf[8];
+  if (weatherViewIndex == 0) {
+    int tempX = 10;
+    int tempY = 28;
+    tft.setTextSize(3);
+    tft.setTextColor(colorShort, TFT_BLACK);
     if (weather.valid) {
-      snprintf(hbuf, sizeof(hbuf), "%02d", weather.nextHour[i]);
-      tft.setCursor(x, y);
-      tft.print(hbuf);
-      tft.print(":00");
-      tft.setCursor(x, y + 12);
-      char tbuf[8];
-      snprintf(tbuf, sizeof(tbuf), "%.0fC", weather.nextTemp[i]);
-      tft.print(tbuf);
-      tft.setCursor(x, y + 24);
-      tft.print(String(weather.nextProb[i]) + "%");
+      char buf[16];
+      snprintf(buf, sizeof(buf), "%.1fC", weather.temp);
+      tft.setCursor(tempX, tempY);
+      tft.print(buf);
     } else {
-      tft.setCursor(x, y);
-      tft.print("--");
+      tft.setCursor(tempX, tempY);
+      tft.print("--.-C");
+    }
+    drawWeatherIcon(weather.code, weather.rain, weather.snow, iconX, iconY);
+
+    tft.setTextSize(1);
+    tft.setTextColor(colorMuted, TFT_BLACK);
+    tft.setCursor(10, 58);
+    tft.print("Next:");
+    for (int i = 0; i < 3; i++) {
+      int x = 10 + i * 70;
+      int y = 72;
+      if (weather.valid) {
+        char hbuf[8];
+        snprintf(hbuf, sizeof(hbuf), "%02d:00", weather.nextHour[i]);
+        tft.setCursor(x, y);
+        tft.print(hbuf);
+        tft.setCursor(x, y + 12);
+        char tbuf[8];
+        snprintf(tbuf, sizeof(tbuf), "%.0fC", weather.nextTemp[i]);
+        tft.print(tbuf);
+        tft.setCursor(x, y + 24);
+        tft.print(String(weather.nextProb[i]) + "%");
+      } else {
+        tft.setCursor(x, y);
+        tft.print("--");
+      }
+    }
+  } else {
+    drawWeatherIcon(weather.code, weather.rain, weather.snow, iconX, iconY);
+    tft.setTextSize(2);
+    tft.setTextColor(colorShort, TFT_BLACK);
+    if (weather.valid) {
+      char buf[20];
+      snprintf(buf, sizeof(buf), "Temp %.1fC", weather.temp);
+      tft.setCursor(10, 32);
+      tft.print(buf);
+      snprintf(buf, sizeof(buf), "Feels %.1fC", weather.feels);
+      tft.setCursor(10, 52);
+      tft.print(buf);
+      snprintf(buf, sizeof(buf), "Wind %.1f km/h", weather.wind);
+      tft.setCursor(10, 72);
+      tft.print(buf);
+      snprintf(buf, sizeof(buf), "Precip %d%%", (int)weather.precipProb);
+      tft.setCursor(10, 92);
+      tft.print(buf);
+    } else {
+      tft.setCursor(10, 32);
+      tft.print("No data");
     }
   }
   lastDrawMs = millis();
+  lastView = weatherViewIndex;
+  lastValid = weather.valid;
+  lastTemp = weather.temp;
+  lastFeels = weather.feels;
+  lastWind = weather.wind;
+  lastPop = weather.precipProb;
+  lastCode = weather.code;
+  lastRain = weather.rain;
+  lastSnow = weather.snow;
+  lastHour0 = weather.nextHour[0];
+  lastHour1 = weather.nextHour[1];
+  lastHour2 = weather.nextHour[2];
+  lastNextTemp0 = weather.nextTemp[0];
+  lastNextTemp1 = weather.nextTemp[1];
+  lastNextTemp2 = weather.nextTemp[2];
+  lastNextProb0 = weather.nextProb[0];
+  lastNextProb1 = weather.nextProb[1];
+  lastNextProb2 = weather.nextProb[2];
 }
 
 int nextAppIndex(int current) {
@@ -3256,6 +3312,12 @@ void loop() {
       leftPending = true;
       leftPendingMs = nowMs;
       leftPendingAction = 4;
+    }
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      weatherViewIndex = (weatherViewIndex + 1) % 2;
+      renderWeatherScreen(true);
+      return;
     }
     if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
       leftPending = false;
