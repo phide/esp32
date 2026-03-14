@@ -11,6 +11,7 @@
 extern "C" {
   #include <lwip/etharp.h>
   #include <lwip/netif.h>
+  #include <mbedtls/sha256.h>
 }
 
 TFT_eSPI tft = TFT_eSPI();
@@ -47,6 +48,8 @@ const char* PREFS_AI_WIFI_KEY = "ai_wifi";
 const char* PREFS_AI_SYSTEM_KEY = "ai_system";
 const char* PREFS_AI_MODEL_KEY = "ai_model";
 const char* PREFS_WOL_KEY = "wol_json";
+const char* PREFS_PIHOLE_HOST_KEY = "pihole_host";
+const char* PREFS_PIHOLE_KEY_KEY  = "pihole_key";
 const float WEATHER_LAT = 53.5737f;
 const float WEATHER_LON = 9.9001f;
 const uint32_t WEATHER_REFRESH_MS = 10UL * 60UL * 1000UL;
@@ -90,7 +93,8 @@ enum ScreenState {
   SCREEN_WEATHER,
   SCREEN_SNAKE,
   SCREEN_FLAPPY,
-  SCREEN_WOL
+  SCREEN_WOL,
+  SCREEN_PIHOLE
 };
 
 enum ButtonEvent {
@@ -102,6 +106,17 @@ enum ButtonEvent {
 struct WifiEntry {
   String ssid;
   String password;
+};
+
+struct PiholeStats {
+  bool valid = false;
+  bool enabled = false;
+  int queriesToday = 0;
+  int blockedToday = 0;
+  float blockedPct = 0.0f;
+  int domainsBlocked = 0;
+  int uniqueClients = 0;
+  uint32_t fetchedMs = 0;
 };
 
 struct WolDevice {
@@ -142,6 +157,11 @@ void saveWolDevices();
 void sendWolPacket(const String& mac);
 bool wolParseMac(const String& macStr, uint8_t* out);
 void runNetworkScan(std::vector<WolScanResult>& results);
+void renderPiholeScreen(bool force);
+void fetchPiholeStats();
+void savePiholeConfig();
+static String pihFmt(int n);
+static String piholePasswordToApiKey(const String& password);
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
 void renderStartScreen(bool force, uint32_t nowMs);
@@ -191,6 +211,7 @@ const int APP_WEATHER = 3;
 const int APP_SNAKE = 4;
 const int APP_FLAPPY = 5;
 const int APP_WOL = 6;
+const int APP_PIHOLE = 7;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -223,6 +244,11 @@ String aiHost = "";
 String aiWifiSsid = "";
 String aiModel = "llama3.2:3b";
 String aiSystemMessage = "";
+String piholeHost = "";
+String piholeApiKey = "";
+PiholeStats piholeStats;
+bool piholeFetching = false;
+
 std::vector<WolDevice> wolDevices;
 int wolMenuIdx = 0;       // 0..N-1 = saved device, N = SCAN button
 int wolSubState = 0;      // 0=list, 1=scanning, 2=scan_results
@@ -1246,6 +1272,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
         html += "<a class='btn' href='/ai'>AI</a>";
         html += "<a class='btn' href='/wol'>Wake on LAN</a>";
+        html += "<a class='btn' href='/pihole'>Pi-hole</a>";
         html += "<a class='btn' href='/time'>Time</a>";
         html += "<a class='btn' href='/ntp'>Time Sync</a>";
         html += "</div></div>";
@@ -1863,6 +1890,143 @@ void updateWifiAndTime(uint32_t nowMs) {
         webServer.send(303);
       });
 
+      // ---- Pi-hole ----
+      webServer.on("/pihole", []() {
+        String html;
+        html.reserve(4096);
+        const char* CSS =
+          "<!doctype html><html><head><meta charset='utf-8'>"
+          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+          "<title>Pi-hole</title>"
+          "<style>"
+          ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+          "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
+          "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+          "-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(160deg,#0b1118,#141d2a);color:var(--text)}"
+          ".wrap{max-width:720px;margin:0 auto}"
+          ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px}"
+          ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+          "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+          ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}"
+          ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);text-decoration:none}"
+          "a.btn,button.btn{display:inline-block;text-align:center;padding:8px 14px;border-radius:10px;"
+          "border:1px solid #2a3a54;background:#1d2736;color:var(--text);text-decoration:none;font-weight:600;cursor:pointer}"
+          "button.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+          "button.danger{background:#e05252;border-color:#b03a3a}"
+          "button.enable{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+          "input{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;padding:8px 10px;width:100%}"
+          ".muted{color:var(--muted);font-size:12px}"
+          ".lbl{font-size:13px;font-weight:600;margin-bottom:4px}"
+          ".stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}"
+          ".stat{background:#0f141a;border:1px solid #223044;border-radius:10px;padding:10px 12px}"
+          ".stat .val{font-size:24px;font-weight:700;color:var(--accent)}"
+          ".stat .key{font-size:11px;color:var(--muted);margin-top:2px}"
+          ".bar-wrap{height:8px;background:#1a2535;border-radius:4px;overflow:hidden;margin:8px 0}"
+          ".bar-fill{height:100%;border-radius:4px;background:var(--ok)}"
+          ".status-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}"
+          ".green{background:#5bd693}.red{background:#e05252}"
+          "</style></head><body><div class='wrap'>";
+        html += CSS;
+        html += "<div class='title'>Pi-hole Monitor</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='pill' href='/settings'>Back</a>";
+        html += "</div></div>";
+
+        // Config form
+        html += "<div class='card'>";
+        html += "<div class='lbl'>Configuration</div>";
+        html += "<form method='post' action='/pihole/save' style='display:flex;flex-direction:column;gap:10px;margin-top:8px'>";
+        html += "<div><div class='muted' style='margin-bottom:4px'>Pi-hole Host (e.g. 192.168.1.2 or http://pi.hole)</div>";
+        html += "<input name='host' value='"; html += piholeHost; html += "' placeholder='192.168.1.2'></div>";
+        html += "<div><div class='muted' style='margin-bottom:4px'>Password (optional, needed for enable/disable)</div>";
+        html += "<input type='password' name='key' value='' placeholder='";
+        html += piholeApiKey.length() > 0 ? "password saved — enter new to change" : "leave empty for read-only";
+        html += "'></div>";
+        html += "<button type='submit' class='btn save'>Save</button></form></div>";
+
+        // Stats
+        html += "<div class='card'>";
+        html += "<div class='row' style='justify-content:space-between'>";
+        html += "<div class='lbl'>Current Stats</div>";
+        if (piholeStats.valid) {
+          html += "<span><span class='status-dot ";
+          html += piholeStats.enabled ? "green" : "red";
+          html += "'></span><b>";
+          html += piholeStats.enabled ? "Enabled" : "Disabled";
+          html += "</b></span>";
+        }
+        html += "</div>";
+        if (!piholeStats.valid) {
+          html += "<div class='muted' style='margin-top:8px'>";
+          html += piholeHost.length() == 0 ? "No host configured." : "Stats not loaded. Save host and refresh.";
+          html += "</div>";
+        } else {
+          html += "<div class='stat-grid'>";
+          html += "<div class='stat'><div class='val'>"; html += pihFmt(piholeStats.queriesToday); html += "</div><div class='key'>Queries today</div></div>";
+          html += "<div class='stat'><div class='val'>"; html += pihFmt(piholeStats.blockedToday); html += "</div><div class='key'>Blocked today</div></div>";
+          html += "<div class='stat'><div class='val'>"; html += pihFmt(piholeStats.domainsBlocked); html += "</div><div class='key'>Domains blocked</div></div>";
+          html += "<div class='stat'><div class='val'>"; html += String(piholeStats.uniqueClients); html += "</div><div class='key'>Clients</div></div>";
+          html += "</div>";
+          char pctBuf[12]; snprintf(pctBuf, sizeof(pctBuf), "%.1f%%", piholeStats.blockedPct);
+          html += "<div style='margin-top:8px'><div class='muted'>Blocked: "; html += pctBuf; html += "</div>";
+          html += "<div class='bar-wrap'><div class='bar-fill' style='width:";
+          html += String((int)piholeStats.blockedPct); html += "%'></div></div></div>";
+        }
+        html += "</div>";
+
+        // Actions
+        html += "<div class='card'><div class='row'>";
+        html += "<form method='post' action='/pihole/refresh'><button class='btn'>Refresh Stats</button></form>";
+        if (piholeApiKey.length() > 0 && piholeStats.valid) {
+          html += "<form method='post' action='/pihole/toggle'><button class='btn ";
+          html += piholeStats.enabled ? "danger" : "enable";
+          html += "'>";
+          html += piholeStats.enabled ? "Disable (5 min)" : "Enable";
+          html += "</button></form>";
+        }
+        html += "</div></div>";
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/pihole/save", []() {
+        piholeHost = webServer.arg("host");
+        piholeHost.trim();
+        String password = webServer.arg("key");
+        password.trim();
+        if (password.length() > 0) {
+          piholeApiKey = piholePasswordToApiKey(password);
+        }
+        // if password field left empty, keep existing key
+        savePiholeConfig();
+        piholeStats.valid = false;
+        fetchPiholeStats();
+        webServer.sendHeader("Location", "/pihole");
+        webServer.send(303);
+      });
+
+      webServer.on("/pihole/refresh", []() {
+        fetchPiholeStats();
+        webServer.sendHeader("Location", "/pihole");
+        webServer.send(303);
+      });
+
+      webServer.on("/pihole/toggle", []() {
+        if (piholeApiKey.length() > 0 && piholeStats.valid) {
+          String base = piholeHost;
+          if (!base.startsWith("http://") && !base.startsWith("https://")) base = "http://" + base;
+          if (base.endsWith("/")) base = base.substring(0, base.length()-1);
+          String action = piholeStats.enabled ? "disable=300" : "enable";
+          HTTPClient http;
+          http.begin(base + "/admin/api.php?" + action + "&auth=" + piholeApiKey);
+          http.setTimeout(6000);
+          http.GET();
+          http.end();
+          fetchPiholeStats();
+        }
+        webServer.sendHeader("Location", "/pihole");
+        webServer.send(303);
+      });
 
       webServer.on("/time", []() {
         String html;
@@ -2483,7 +2647,7 @@ void switchToApp(int appIndex) {
   if (appIndex == APP_AI && !isAiAvailable()) {
     appIndex = APP_POMODORO;
   }
-  if (appIndex < 0 || appIndex > APP_WOL) {
+  if (appIndex < 0 || appIndex > APP_PIHOLE) {
     appIndex = APP_POMODORO;
   }
   selectedAppIndex = appIndex;
@@ -2521,6 +2685,14 @@ void switchToApp(int appIndex) {
     screenState = SCREEN_WOL;
     wolMenuIdx = 0; wolSubState = 0; wolSentMs = 0;
     renderWolScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_PIHOLE) {
+    screenState = SCREEN_PIHOLE;
+    piholeFetching = false;
+    renderPiholeScreen(true);
+    fetchPiholeStats();
+    renderPiholeScreen(true);
     return;
   }
 
@@ -2713,7 +2885,196 @@ const char* labelForApp(int appIndex) {
   if (appIndex == APP_SNAKE) return "Snake";
   if (appIndex == APP_FLAPPY) return "Flappy";
   if (appIndex == APP_WOL) return "WoL";
+  if (appIndex == APP_PIHOLE) return "Pi-hole";
   return (appIndex == APP_CLOCK) ? "Clock" : "Pomodoro";
+}
+
+// ========== PI-HOLE ==========
+
+static String pihFmt(int n) {
+  if (n >= 1000000) return String(n / 1000000.0f, 1) + "M";
+  if (n >= 1000)    return String(n / 1000.0f, 1) + "K";
+  return String(n);
+}
+
+// Pi-hole API key = SHA256(hex(SHA256(password)))
+static String piholePasswordToApiKey(const String& password) {
+  auto sha256hex = [](const uint8_t* data, size_t len) -> String {
+    uint8_t hash[32];
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, data, len);
+    mbedtls_sha256_finish(&ctx, hash);
+    mbedtls_sha256_free(&ctx);
+    char hex[65];
+    for (int i = 0; i < 32; i++) sprintf(hex + i*2, "%02x", hash[i]);
+    hex[64] = '\0';
+    return String(hex);
+  };
+  String h1 = sha256hex((const uint8_t*)password.c_str(), password.length());
+  return sha256hex((const uint8_t*)h1.c_str(), h1.length());
+}
+
+void loadPiholeConfig() {
+  prefs.begin(PREFS_NAMESPACE, true);
+  piholeHost   = prefs.getString(PREFS_PIHOLE_HOST_KEY, "");
+  piholeApiKey = prefs.getString(PREFS_PIHOLE_KEY_KEY, "");
+  prefs.end();
+}
+
+void savePiholeConfig() {
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.putString(PREFS_PIHOLE_HOST_KEY, piholeHost);
+  prefs.putString(PREFS_PIHOLE_KEY_KEY, piholeApiKey);
+  prefs.end();
+}
+
+void fetchPiholeStats() {
+  if (piholeHost.length() == 0 || WiFi.status() != WL_CONNECTED) return;
+  piholeFetching = true;
+  String base = piholeHost;
+  if (!base.startsWith("http://") && !base.startsWith("https://")) base = "http://" + base;
+  if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+
+  HTTPClient http;
+  // Try Pi-hole v5 API
+  http.begin(base + "/admin/api.php");
+  http.setTimeout(8000);
+  int code = http.GET();
+  if (code == 200) {
+    String payload = http.getString();
+    DynamicJsonDocument doc(2048);
+    if (!deserializeJson(doc, payload) && doc.containsKey("dns_queries_today")) {
+      piholeStats.queriesToday   = doc["dns_queries_today"]   | 0;
+      piholeStats.blockedToday   = doc["ads_blocked_today"]   | 0;
+      piholeStats.blockedPct     = doc["ads_percentage_today"]| 0.0f;
+      piholeStats.domainsBlocked = doc["domains_being_blocked"]| 0;
+      piholeStats.uniqueClients  = doc["unique_clients"]      | 0;
+      String status = doc["status"] | "unknown";
+      piholeStats.enabled = (status == "enabled");
+      piholeStats.valid = true;
+      piholeStats.fetchedMs = millis();
+    }
+  }
+  http.end();
+  piholeFetching = false;
+}
+
+void renderPiholeScreen(bool force) {
+  uint16_t colDiv  = tft.color565(30, 50, 70);
+  uint16_t colMut  = tft.color565(60, 85, 110);
+  int W = tft.width();
+
+  tft.fillScreen(TFT_BLACK);
+
+  // Header
+  tft.setTextSize(2);
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  tft.setCursor(6, 6);
+  tft.print("PI-HOLE");
+  // Status dot right-aligned
+  if (piholeStats.valid) {
+    uint16_t dotCol = piholeStats.enabled ? tft.color565(50,210,80) : tft.color565(220,60,60);
+    tft.fillCircle(W - 10, 14, 6, dotCol);
+    tft.setTextSize(1);
+    tft.setTextColor(dotCol, TFT_BLACK);
+    const char* lbl = piholeStats.enabled ? "ON" : "OFF";
+    tft.setCursor(W - 10 - strlen(lbl)*6 - 6, 10);
+    tft.print(lbl);
+  } else if (piholeFetching) {
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(W - 7*6 - 4, 10); tft.print("LOADING");
+  } else if (piholeHost.length() == 0) {
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(W - 9*6 - 4, 10); tft.print("NO HOST");
+  }
+  tft.drawFastHLine(0, 27, W, colDiv);
+
+  if (!piholeStats.valid && !piholeFetching) {
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    int msg = piholeHost.length() == 0 ? 0 : 1;
+    const char* line1 = msg == 0 ? "Configure host" : "Could not reach";
+    const char* line2 = msg == 0 ? "in Settings/Pi-hole" : "Pi-hole. Check";
+    const char* line3 = msg == 0 ? "" : "host in Settings.";
+    tft.setCursor(6, 40); tft.print(line1);
+    tft.setCursor(6, 52); tft.print(line2);
+    if (strlen(line3)) { tft.setCursor(6, 64); tft.print(line3); }
+    tft.drawFastHLine(0, 84, W, colDiv);
+    tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(6, 92); tft.print("L: REFRESH");
+    tft.setCursor(6, 104); tft.print("<<: EXIT");
+    return;
+  }
+
+  if (piholeFetching) {
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(6, 50); tft.print("Fetching stats...");
+    return;
+  }
+
+  // Queries today
+  tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+  String qLabel = "QUERIES TODAY";
+  tft.setCursor((W - qLabel.length()*6)/2, 32); tft.print(qLabel);
+  tft.setTextSize(2); tft.setTextColor(colorFocus, TFT_BLACK);
+  String qVal = pihFmt(piholeStats.queriesToday);
+  tft.setCursor((W - qVal.length()*12)/2, 42); tft.print(qVal);
+
+  // Blocked
+  tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+  String bLabel = "BLOCKED";
+  tft.setCursor((W - bLabel.length()*6)/2, 64); tft.print(bLabel);
+  tft.setTextSize(2); tft.setTextColor(colorShort, TFT_BLACK);
+  String bVal = pihFmt(piholeStats.blockedToday);
+  tft.setCursor((W - bVal.length()*12)/2, 74); tft.print(bVal);
+
+  // Percentage right-aligned on same row
+  tft.setTextSize(1); tft.setTextColor(colorShort, TFT_BLACK);
+  char pctBuf[10]; snprintf(pctBuf, sizeof(pctBuf), "%.1f%%", piholeStats.blockedPct);
+  tft.setCursor(W - strlen(pctBuf)*6 - 4, 80); tft.print(pctBuf);
+
+  // Progress bar
+  int barY = 96, barH = 10;
+  tft.fillRoundRect(4, barY, W-8, barH, 3, tft.color565(20,35,55));
+  int fillW = (int)((W-8) * piholeStats.blockedPct / 100.0f);
+  if (fillW > 0) tft.fillRoundRect(4, barY, fillW, barH, 3, colorShort);
+
+  tft.drawFastHLine(0, 112, W, colDiv);
+
+  // Domains + clients
+  tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+  tft.setCursor(6, 118); tft.print("Domains blocked:");
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  String dVal = pihFmt(piholeStats.domainsBlocked);
+  tft.setCursor(W - dVal.length()*6 - 4, 118); tft.print(dVal);
+
+  tft.setTextColor(colMut, TFT_BLACK);
+  tft.setCursor(6, 130); tft.print("Clients:");
+  tft.setTextColor(colorFocus, TFT_BLACK);
+  String cVal = String(piholeStats.uniqueClients);
+  tft.setCursor(W - cVal.length()*6 - 4, 130); tft.print(cVal);
+
+  tft.drawFastHLine(0, 144, W, colDiv);
+
+  // Last updated
+  tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+  uint32_t ago = (millis() - piholeStats.fetchedMs) / 1000;
+  String agoStr;
+  if (ago < 60)        agoStr = "Updated " + String(ago) + "s ago";
+  else if (ago < 3600) agoStr = "Updated " + String(ago/60) + "m ago";
+  else                 agoStr = "Updated " + String(ago/3600) + "h ago";
+  tft.setCursor(6, 150); tft.print(agoStr);
+
+  // Hints
+  tft.setCursor(6, 163); tft.print("L: REFRESH");
+  if (piholeApiKey.length() > 0) {
+    tft.setTextColor(piholeStats.enabled ? tft.color565(220,80,80) : tft.color565(50,210,80), TFT_BLACK);
+    tft.setCursor(6, 175);
+    tft.print(piholeStats.enabled ? "R: DISABLE" : "R: ENABLE");
+  }
+  tft.setTextColor(colMut, TFT_BLACK);
+  tft.setCursor(6, 187); tft.print("<<: EXIT");
 }
 
 // ========== WAKE ON LAN ==========
@@ -3293,6 +3654,8 @@ void renderAppSelectScreen(bool force) {
     appLabel = "FLAPPY";
   } else if (selectedAppIndex == APP_WOL) {
     appLabel = "WOL";
+  } else if (selectedAppIndex == APP_PIHOLE) {
+    appLabel = "PI-HOLE";
   }
   const int appTextSize = 4;
   tft.setTextSize(appTextSize);
@@ -4122,6 +4485,7 @@ int nextAppIndex(int current) {
   apps.push_back(APP_SNAKE);
   apps.push_back(APP_FLAPPY);
   apps.push_back(APP_WOL);
+  apps.push_back(APP_PIHOLE);
   int pos = 0;
   for (int i = 0; i < (int)apps.size(); i++) {
     if (apps[i] == current) {
@@ -4140,6 +4504,7 @@ void setup() {
   loadModesConfig();
   loadSavedApp();
   loadWolDevices();
+  loadPiholeConfig();
   beginWifiSetup();
   loadSavedMode();
 
@@ -4242,6 +4607,12 @@ void loop() {
         screenState = SCREEN_WOL;
         wolMenuIdx = 0; wolSubState = 0; wolSentMs = 0;
         renderWolScreen(true);
+      } else if (selectedAppIndex == APP_PIHOLE) {
+        screenState = SCREEN_PIHOLE;
+        piholeFetching = false;
+        renderPiholeScreen(true);
+        fetchPiholeStats();
+        renderPiholeScreen(true);
       } else {
         screenState = SCREEN_START;
         lastInputMs = nowMs;
@@ -4494,6 +4865,46 @@ void loop() {
       wolSentMs = 0;
       renderWolScreen(true);
     }
+    return;
+  }
+
+  if (screenState == SCREEN_PIHOLE) {
+    // Auto-refresh every 5 minutes
+    if (piholeStats.valid && (millis() - piholeStats.fetchedMs) > 300000) {
+      fetchPiholeStats();
+      renderPiholeScreen(true);
+    }
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+        leftPending = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      leftPending = true;
+      leftPendingMs = nowMs;
+      // Single tap: refresh
+      fetchPiholeStats();
+      renderPiholeScreen(true);
+    }
+    if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) leftPending = false;
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT && piholeApiKey.length() > 0 && piholeStats.valid) {
+      // Toggle enable/disable
+      String base = piholeHost;
+      if (!base.startsWith("http://") && !base.startsWith("https://")) base = "http://" + base;
+      if (base.endsWith("/")) base = base.substring(0, base.length()-1);
+      String action = piholeStats.enabled ? "disable=300" : "enable"; // disable for 5 min
+      HTTPClient http;
+      http.begin(base + "/admin/api.php?" + action + "&auth=" + piholeApiKey);
+      http.setTimeout(6000);
+      http.GET();
+      http.end();
+      fetchPiholeStats();
+      renderPiholeScreen(true);
+    }
+    renderPiholeScreen(false);
     return;
   }
 
