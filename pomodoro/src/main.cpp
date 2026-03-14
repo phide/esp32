@@ -1,12 +1,17 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <time.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <vector>
+extern "C" {
+  #include <lwip/etharp.h>
+  #include <lwip/netif.h>
+}
 
 TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
@@ -41,6 +46,7 @@ const char* PREFS_AI_HOST_KEY = "ai_host";
 const char* PREFS_AI_WIFI_KEY = "ai_wifi";
 const char* PREFS_AI_SYSTEM_KEY = "ai_system";
 const char* PREFS_AI_MODEL_KEY = "ai_model";
+const char* PREFS_WOL_KEY = "wol_json";
 const float WEATHER_LAT = 53.5737f;
 const float WEATHER_LON = 9.9001f;
 const uint32_t WEATHER_REFRESH_MS = 10UL * 60UL * 1000UL;
@@ -83,7 +89,8 @@ enum ScreenState {
   SCREEN_AI,
   SCREEN_WEATHER,
   SCREEN_SNAKE,
-  SCREEN_FLAPPY
+  SCREEN_FLAPPY,
+  SCREEN_WOL
 };
 
 enum ButtonEvent {
@@ -95,6 +102,17 @@ enum ButtonEvent {
 struct WifiEntry {
   String ssid;
   String password;
+};
+
+struct WolDevice {
+  String name;
+  String mac;
+};
+
+struct WolScanResult {
+  String ip;
+  String mac;
+  bool alreadySaved;
 };
 
 struct ModeEntry;
@@ -118,6 +136,12 @@ void renderSnakeScreen(bool force);
 void initFlappyGame();
 void updateFlappyGame(uint32_t nowMs);
 void renderFlappyScreen(bool force);
+void renderWolScreen(bool force);
+void loadWolDevices();
+void saveWolDevices();
+void sendWolPacket(const String& mac);
+bool wolParseMac(const String& macStr, uint8_t* out);
+void runNetworkScan(std::vector<WolScanResult>& results);
 void startPhase(Phase phase, bool running);
 void renderTimerScreen(bool force);
 void renderStartScreen(bool force, uint32_t nowMs);
@@ -166,6 +190,7 @@ const int APP_AI = 2;
 const int APP_WEATHER = 3;
 const int APP_SNAKE = 4;
 const int APP_FLAPPY = 5;
+const int APP_WOL = 6;
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -198,6 +223,12 @@ String aiHost = "";
 String aiWifiSsid = "";
 String aiModel = "llama3.2:3b";
 String aiSystemMessage = "";
+std::vector<WolDevice> wolDevices;
+int wolMenuIdx = 0;       // 0..N-1 = saved device, N = SCAN button
+int wolSubState = 0;      // 0=list, 1=scanning, 2=scan_results
+int wolScanResultIdx = 0;
+std::vector<WolScanResult> wolScanResults;
+uint32_t wolSentMs = 0;
 String aiTypingText = "";
 String aiResponseText = "";
 int aiScrollOffset = 0;
@@ -441,6 +472,9 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='tab";
         if (selectedAppIndex == APP_FLAPPY) html += " active";
         html += "' href='/apps?app=5'>Flappy</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_WOL) html += " active";
+        html += "' href='/apps?app=6'>WoL</a>";
         html += "</div>";
         html += "<div class='card'><div class='grid";
         if (selectedAppIndex == APP_CLOCK) {
@@ -490,6 +524,9 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "<a class='mode";
           if (selectedAppIndex == APP_FLAPPY) html += " active";
           html += "' href='/apps?app=5'>Flappy</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_WOL) html += " active";
+          html += "' href='/apps?app=6'>WoL</a>";
           html += "</div>";
           if (!isAiAvailable() && aiWifiSsid.length() > 0) {
             html += "<div class='stat' style='margin-top:8px;color:var(--muted)'>AI available only on ";
@@ -1208,6 +1245,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='btn' href='/apps'>Apps</a>";
         html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
         html += "<a class='btn' href='/ai'>AI</a>";
+        html += "<a class='btn' href='/wol'>Wake on LAN</a>";
         html += "<a class='btn' href='/time'>Time</a>";
         html += "<a class='btn' href='/ntp'>Time Sync</a>";
         html += "</div></div>";
@@ -1648,6 +1686,180 @@ void updateWifiAndTime(uint32_t nowMs) {
 
       webServer.on("/ai/open", []() {
         webServer.sendHeader("Location", "/ai");
+        webServer.send(303);
+      });
+
+      // ========== WOL WEB HANDLERS ==========
+
+      webServer.on("/wol", []() {
+        String html;
+        html.reserve(6144);
+        html += "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Wake on LAN</title>"
+                "<style>"
+                ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
+                "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;--del:#ff5a5a;}"
+                "*{box-sizing:border-box}body{margin:0;padding:18px;font-family:ui-sans-serif,system-ui,"
+                "-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(160deg,#0b1118,#141d2a);color:var(--text)}"
+                ".wrap{max-width:720px;margin:0 auto}"
+                ".title{font-size:22px;font-weight:700;letter-spacing:.5px;margin:6px 0 14px}"
+                ".card{background:var(--card);border:1px solid #223044;border-radius:14px;padding:14px 16px;"
+                "box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px}"
+                ".row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px}"
+                ".pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#223044;color:var(--muted);text-decoration:none}"
+                "button.btn,a.btn{display:inline-block;text-align:center;padding:8px 12px;border-radius:10px;"
+                "border:1px solid #2a3a54;background:#1d2736;color:var(--text);font-weight:600;text-decoration:none;cursor:pointer}"
+                "button.btn.save{background:#59d98e;border-color:#3aa66b;color:#07111e}"
+                "button.btn.wake{background:#5aa7ff;border-color:#3a7acc;color:#07111e}"
+                "button.btn.del{background:#2a1a1a;border-color:#5a2a2a;color:#ff7070}"
+                "input{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;padding:8px 10px;width:100%}"
+                ".muted{color:var(--muted);font-size:12px}"
+                ".device{padding:10px 0;border-bottom:1px solid #1a2535}"
+                ".device:last-child{border-bottom:none}"
+                ".mac{font-family:monospace;color:#5aa7ff;font-size:13px}"
+                ".badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;"
+                "background:#1a3020;color:#5bd693;border:1px solid #2a5030}"
+                ".badge.warn{background:#2a2010;color:#ffb84d;border-color:#5a4020}"
+                ".scan-row{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #1a2535}"
+                ".scan-row:last-child{border-bottom:none}"
+                ".scan-ip{font-family:monospace;min-width:110px;font-size:13px}"
+                "</style></head><body><div class='wrap'>";
+        html += "<div class='title'>Wake on LAN</div>";
+        html += "<div class='card'><div class='row'>";
+        html += "<a class='pill' href='/'>Back</a>";
+        html += "</div></div>";
+
+        // Saved devices
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>Saved Devices</div></div>";
+        if (wolDevices.empty()) {
+          html += "<div class='muted' style='padding:8px 0'>No devices saved yet.</div>";
+        } else {
+          for (int i = 0; i < (int)wolDevices.size(); i++) {
+            html += "<div class='device'><div class='row'>";
+            html += "<div style='flex:1'><div style='font-weight:600'>";
+            html += wolDevices[i].name.length() > 0 ? wolDevices[i].name : "(no name)";
+            html += "</div><div class='mac'>";
+            html += wolDevices[i].mac;
+            html += "</div></div>";
+            // Wake button
+            html += "<form method='post' action='/wol/send' style='margin:0'>";
+            html += "<input type='hidden' name='idx' value='";
+            html += i;
+            html += "'><button class='btn wake' type='submit'>Wake</button></form>";
+            // Delete button
+            html += "<form method='post' action='/wol/delete' style='margin:0'>";
+            html += "<input type='hidden' name='idx' value='";
+            html += i;
+            html += "'><button class='btn del' type='submit'>Delete</button></form>";
+            html += "</div></div>";
+          }
+        }
+        html += "</div>";
+
+        // Add device
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>Add Device</div></div>";
+        html += "<form method='post' action='/wol/add'>";
+        html += "<div style='display:flex;flex-direction:column;gap:8px'>";
+        html += "<input name='name' placeholder='Device name (e.g. Gaming PC)'>";
+        html += "<input name='mac' placeholder='MAC address (AA:BB:CC:DD:EE:FF)'>";
+        html += "<button class='btn save' type='submit' style='align-self:flex-start'>Add</button>";
+        html += "</div></form></div>";
+
+        // Network scan
+        html += "<div class='card'>";
+        html += "<div class='row'><div class='muted'>Network Scan</div>"
+                "<button class='btn' id='scanBtn' onclick='doScan()'>Scan</button>"
+                "<span class='muted' id='scanStatus'></span></div>";
+        html += "<div id='scanResults'></div>";
+        html += "<script>"
+                "function doScan(){"
+                "document.getElementById('scanBtn').disabled=true;"
+                "document.getElementById('scanStatus').textContent='Scanning...';"
+                "document.getElementById('scanResults').innerHTML='';"
+                "fetch('/wol/scan').then(r=>r.json()).then(function(list){"
+                "document.getElementById('scanBtn').disabled=false;"
+                "document.getElementById('scanStatus').textContent=list.length+' found';"
+                "var html='';"
+                "list.forEach(function(d){"
+                "html+=\"<div class='scan-row'>\";"
+                "html+=\"<span class='scan-ip'>\"+d.ip+\"</span>\";"
+                "html+=\"<span class='mac'>\"+d.mac+\"</span>\";"
+                "if(d.saved){html+=\"<span class='badge'>Saved</span>\";}"
+                "if(!d.saved){"
+                "html+=\"<form method='post' action='/wol/add' style='display:flex;gap:6px;align-items:center;margin:0'>\";"
+                "html+=\"<input type='hidden' name='mac' value='\"+d.mac+\"'>\";"
+                "html+=\"<input name='name' placeholder='Name' style='width:120px;padding:4px 8px'>\";"
+                "html+=\"<button class='btn save' type='submit' style='padding:4px 10px'>Add</button>\";"
+                "html+=\"</form>\";}"
+                "html+=\"</div>\";"
+                "});"
+                "document.getElementById('scanResults').innerHTML=html;"
+                "}).catch(function(){"
+                "document.getElementById('scanBtn').disabled=false;"
+                "document.getElementById('scanStatus').textContent='Scan failed';});"
+                "}"
+                "</script>";
+        html += "</div>";
+        html += "</div></body></html>";
+        webServer.send(200, "text/html", html);
+      });
+
+      webServer.on("/wol/scan", []() {
+        std::vector<WolScanResult> results;
+        runNetworkScan(results);
+        String json = "[";
+        for (int i = 0; i < (int)results.size(); i++) {
+          if (i > 0) json += ",";
+          json += "{\"ip\":\"";
+          json += results[i].ip;
+          json += "\",\"mac\":\"";
+          json += results[i].mac;
+          json += "\",\"saved\":";
+          json += results[i].alreadySaved ? "true" : "false";
+          json += "}";
+        }
+        json += "]";
+        webServer.send(200, "application/json", json);
+      });
+
+      webServer.on("/wol/add", []() {
+        String name = webServer.arg("name");
+        String mac = webServer.arg("mac");
+        name.trim();
+        mac.trim();
+        mac.toUpperCase();
+        uint8_t tmp[6];
+        if (mac.length() > 0 && wolParseMac(mac, tmp)) {
+          WolDevice d;
+          d.name = name;
+          d.mac = mac;
+          wolDevices.push_back(d);
+          saveWolDevices();
+        }
+        webServer.sendHeader("Location", "/wol");
+        webServer.send(303);
+      });
+
+      webServer.on("/wol/delete", []() {
+        int idx = webServer.arg("idx").toInt();
+        if (idx >= 0 && idx < (int)wolDevices.size()) {
+          wolDevices.erase(wolDevices.begin() + idx);
+          if (wolMenuIdx >= (int)wolDevices.size()) wolMenuIdx = 0;
+          saveWolDevices();
+        }
+        webServer.sendHeader("Location", "/wol");
+        webServer.send(303);
+      });
+
+      webServer.on("/wol/send", []() {
+        int idx = webServer.arg("idx").toInt();
+        if (idx >= 0 && idx < (int)wolDevices.size()) {
+          sendWolPacket(wolDevices[idx].mac);
+        }
+        webServer.sendHeader("Location", "/wol");
         webServer.send(303);
       });
 
@@ -2271,7 +2483,7 @@ void switchToApp(int appIndex) {
   if (appIndex == APP_AI && !isAiAvailable()) {
     appIndex = APP_POMODORO;
   }
-  if (appIndex < 0 || appIndex > APP_FLAPPY) {
+  if (appIndex < 0 || appIndex > APP_WOL) {
     appIndex = APP_POMODORO;
   }
   selectedAppIndex = appIndex;
@@ -2303,6 +2515,12 @@ void switchToApp(int appIndex) {
     screenState = SCREEN_FLAPPY;
     initFlappyGame();
     renderFlappyScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_WOL) {
+    screenState = SCREEN_WOL;
+    wolMenuIdx = 0; wolSubState = 0; wolSentMs = 0;
+    renderWolScreen(true);
     return;
   }
 
@@ -2490,19 +2708,252 @@ const char* labelForPhase(Phase phase) {
 }
 
 const char* labelForApp(int appIndex) {
-  if (appIndex == APP_AI) {
-    return "AI";
-  }
-  if (appIndex == APP_WEATHER) {
-    return "Weather";
-  }
-  if (appIndex == APP_SNAKE) {
-    return "Snake";
-  }
-  if (appIndex == APP_FLAPPY) {
-    return "Flappy";
-  }
+  if (appIndex == APP_AI) return "AI";
+  if (appIndex == APP_WEATHER) return "Weather";
+  if (appIndex == APP_SNAKE) return "Snake";
+  if (appIndex == APP_FLAPPY) return "Flappy";
+  if (appIndex == APP_WOL) return "WoL";
   return (appIndex == APP_CLOCK) ? "Clock" : "Pomodoro";
+}
+
+// ========== WAKE ON LAN ==========
+
+void loadWolDevices() {
+  prefs.begin(PREFS_NAMESPACE, true);
+  String json = prefs.getString(PREFS_WOL_KEY, "");
+  prefs.end();
+  wolDevices.clear();
+  if (json.length() == 0) return;
+  DynamicJsonDocument doc(2048);
+  if (deserializeJson(doc, json)) return;
+  JsonArray arr = doc.as<JsonArray>();
+  for (JsonVariant v : arr) {
+    String name = v["n"] | "";
+    String mac = v["m"] | "";
+    if (mac.length() == 0) continue;
+    WolDevice d;
+    d.name = name;
+    d.mac = mac;
+    wolDevices.push_back(d);
+  }
+}
+
+void saveWolDevices() {
+  DynamicJsonDocument doc(2048);
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto& d : wolDevices) {
+    JsonObject obj = arr.createNestedObject();
+    obj["n"] = d.name;
+    obj["m"] = d.mac;
+  }
+  String json;
+  serializeJson(doc, json);
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.putString(PREFS_WOL_KEY, json);
+  prefs.end();
+}
+
+bool wolParseMac(const String& macStr, uint8_t* out) {
+  String s = macStr;
+  s.replace("-", ":");
+  s.toUpperCase();
+  if (s.length() != 17) return false;
+  for (int i = 0; i < 6; i++) {
+    out[i] = (uint8_t)strtol(s.substring(i * 3, i * 3 + 2).c_str(), nullptr, 16);
+  }
+  return true;
+}
+
+void sendWolPacket(const String& mac) {
+  uint8_t macBytes[6];
+  if (!wolParseMac(mac, macBytes)) return;
+  uint8_t packet[102];
+  memset(packet, 0xFF, 6);
+  for (int i = 0; i < 16; i++) memcpy(packet + 6 + i * 6, macBytes, 6);
+  WiFiUDP udp;
+  udp.beginPacket(IPAddress(255, 255, 255, 255), 9);
+  udp.write(packet, sizeof(packet));
+  udp.endPacket();
+}
+
+void runNetworkScan(std::vector<WolScanResult>& results) {
+  results.clear();
+  if (WiFi.status() != WL_CONNECTED) return;
+  IPAddress local = WiFi.localIP();
+  uint8_t a = local[0], b = local[1], c = local[2];
+  struct netif* ni = netif_default;
+  if (!ni) ni = netif_list;
+  if (!ni) return;
+
+  bool captured[256] = {};
+
+  // Phase 1: flood entire /24 with ARP who-has requests.
+  // Small yield gaps every 16 requests to avoid TX buffer overflow.
+  for (int i = 1; i < 255; i++) {
+    if (i == (int)local[3]) continue;
+    ip4_addr_t addr;
+    IP4_ADDR(&addr, a, b, c, (uint8_t)i);
+    etharp_request(ni, &addr);
+    if (i % 16 == 0) { delay(5); yield(); }
+  }
+
+  // Phase 2: poll the ARP table by slot index for 3 seconds.
+  // etharp_get_entry lets us read all current entries (not just look up one IP),
+  // so we capture devices as their replies arrive — regardless of cache size or order.
+  uint32_t deadline = millis() + 3000;
+  while (millis() < deadline) {
+    ip4_addr_t* entIp;
+    struct netif* entNif;
+    struct eth_addr* entMac;
+    for (size_t slot = 0; slot < ARP_TABLE_SIZE; slot++) {
+      if (etharp_get_entry(slot, &entIp, &entNif, &entMac) == 0) continue;
+      if (!entIp || !entMac) continue;
+      // IPAddress(uint32_t) interprets addr in network byte order — same as lwIP
+      IPAddress eip(entIp->addr);
+      if (eip[0] != a || eip[1] != b || eip[2] != c) continue;
+      int last = eip[3];
+      if (last == 0 || last == 255 || last == (int)local[3]) continue;
+      if (captured[last]) continue;
+      if (entMac->addr[0] & 0x01) continue; // multicast / broadcast
+      if (!entMac->addr[0] && !entMac->addr[1] && !entMac->addr[2] &&
+          !entMac->addr[3] && !entMac->addr[4] && !entMac->addr[5]) continue;
+      captured[last] = true;
+      WolScanResult r;
+      char ipStr[16];
+      snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", a, b, c, last);
+      r.ip = ipStr;
+      char macStr[18];
+      snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+        entMac->addr[0], entMac->addr[1], entMac->addr[2],
+        entMac->addr[3], entMac->addr[4], entMac->addr[5]);
+      r.mac = macStr;
+      r.alreadySaved = false;
+      for (const auto& d : wolDevices) {
+        String dm = d.mac; dm.toUpperCase();
+        if (dm == r.mac) { r.alreadySaved = true; break; }
+      }
+      results.push_back(r);
+    }
+    delay(100);
+    yield();
+  }
+}
+
+void renderWolScreen(bool force) {
+  uint16_t colDiv  = tft.color565(30, 50, 70);
+  uint16_t colMut  = tft.color565(60, 85, 110);
+  uint16_t colAcct = tft.color565(80, 140, 200);
+  int W = tft.width(); // 135
+
+  tft.fillScreen(TFT_BLACK);
+
+  // ── SCANNING ────────────────────────────────────────────
+  if (wolSubState == 1) {
+    tft.setTextSize(2); tft.setTextColor(colorFocus, TFT_BLACK);
+    tft.setCursor(6, 6); tft.print("WOL");
+    tft.drawFastHLine(0, 26, W, colDiv);
+    tft.setTextColor(colorShort, TFT_BLACK);
+    int sx = (W - 8*12)/2; tft.setCursor(sx, 80); tft.print("SCANNING");
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(30, 102); tft.print("Please wait...");
+    return;
+  }
+
+  // ── SCAN RESULTS ────────────────────────────────────────
+  if (wolSubState == 2) {
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(6, 6); tft.print("SCAN RESULTS");
+    if (!wolScanResults.empty()) {
+      String idx = String(wolScanResultIdx+1)+"/"+String(wolScanResults.size());
+      tft.setCursor(W - idx.length()*6 - 4, 6); tft.print(idx);
+    }
+    tft.drawFastHLine(0, 16, W, colDiv);
+    if (wolScanResults.empty()) {
+      tft.setTextSize(2); tft.setTextColor(colorFocus, TFT_BLACK);
+      tft.setCursor(6, 50); tft.print("NO DEVICES");
+      tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+      tft.setCursor(6, 72); tft.print("FOUND");
+    } else {
+      if (wolScanResultIdx >= (int)wolScanResults.size()) wolScanResultIdx = 0;
+      const WolScanResult& r = wolScanResults[wolScanResultIdx];
+      // IP address (main identifier)
+      tft.setTextSize(2); tft.setTextColor(colorFocus, TFT_BLACK);
+      String ip = r.ip; if(ip.length()>10) ip=ip.substring(0,10);
+      tft.setCursor(6, 24); tft.print(ip);
+      // MAC
+      tft.setTextSize(1); tft.setTextColor(colAcct, TFT_BLACK);
+      tft.setCursor(6, 44); tft.print(r.mac);
+      // Status badge right-aligned
+      if (r.alreadySaved) {
+        tft.fillRoundRect(W-46, 54, 42, 12, 3, tft.color565(15,40,20));
+        tft.setTextColor(colorShort, tft.color565(15,40,20));
+        tft.setCursor(W-42, 56); tft.print("SAVED");
+      } else {
+        tft.fillRoundRect(W-40, 54, 36, 12, 3, tft.color565(40,20,10));
+        tft.setTextColor(tft.color565(200,120,50), tft.color565(40,20,10));
+        tft.setCursor(W-38, 56); tft.print("NEW");
+      }
+      tft.drawFastHLine(0, 72, W, colDiv);
+      tft.setTextSize(1);
+      if (!r.alreadySaved) {
+        tft.setTextColor(colorShort, TFT_BLACK);
+        tft.setCursor(6, 80); tft.print("R LONG: ADD+WAKE");
+      } else {
+        tft.setTextColor(colorShort, TFT_BLACK);
+        tft.setCursor(6, 80); tft.print("R LONG: WAKE");
+      }
+      tft.setTextColor(colMut, TFT_BLACK);
+      tft.setCursor(6, 92); tft.print("L: PREV  R: NEXT");
+      tft.setCursor(6, 104); tft.print("<<: BACK");
+    }
+    return;
+  }
+
+  // ── LIST (saved devices + SCAN button) ──────────────────
+  int totalItems = (int)wolDevices.size() + 1; // +1 for SCAN button
+  if (wolMenuIdx >= totalItems) wolMenuIdx = 0;
+  bool onScan = (wolMenuIdx == (int)wolDevices.size());
+
+  // Header
+  tft.setTextSize(2); tft.setTextColor(colorFocus, TFT_BLACK);
+  tft.setCursor(6, 6); tft.print("WOL");
+  // Index indicator top-right
+  String idxStr = onScan ? "SCAN" : String(wolMenuIdx+1)+"/"+String(wolDevices.size());
+  tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+  tft.setCursor(W - idxStr.length()*6 - 4, 10); tft.print(idxStr);
+  tft.drawFastHLine(0, 26, W, colDiv);
+
+  if (onScan) {
+    // SCAN NETWORK button
+    tft.setTextSize(2); tft.setTextColor(colorShort, TFT_BLACK);
+    int sx = (W - 4*12)/2; tft.setCursor(sx, 44); tft.print("SCAN");
+    int nx = (W - 7*12)/2; tft.setCursor(nx, 64); tft.print("NETWORK");
+    tft.drawFastHLine(0, 86, W, colDiv);
+    tft.setTextSize(1); tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(6, 94); tft.print("R: START SCAN");
+    tft.setCursor(6, 106); tft.print("<<: EXIT");
+  } else {
+    const WolDevice& dev = wolDevices[wolMenuIdx];
+    String name = dev.name.length() > 0 ? dev.name : "(no name)";
+    if (name.length() > 10) name = name.substring(0, 10);
+    tft.setTextSize(2); tft.setTextColor(colorFocus, TFT_BLACK);
+    tft.setCursor(6, 34); tft.print(name);
+    tft.setTextSize(1); tft.setTextColor(colAcct, TFT_BLACK);
+    tft.setCursor(6, 56); tft.print(dev.mac);
+    tft.drawFastHLine(0, 70, W, colDiv);
+    tft.setTextColor(colorShort, TFT_BLACK);
+    tft.setCursor(6, 78); tft.print("R LONG: WAKE");
+    tft.setTextColor(colMut, TFT_BLACK);
+    tft.setCursor(6, 90); tft.print("L: PREV  R: NEXT");
+    tft.setCursor(6, 102); tft.print("<<: EXIT");
+    // SENT! overlay
+    if (wolSentMs > 0 && (millis() - wolSentMs) < 2000) {
+      tft.fillRoundRect(18, 124, 99, 36, 8, tft.color565(10,40,20));
+      tft.drawRoundRect(18, 124, 99, 36, 8, colorShort);
+      tft.setTextSize(2); tft.setTextColor(colorShort, tft.color565(10,40,20));
+      tft.setCursor(26, 134); tft.print("SENT!");
+    }
+  }
 }
 
 bool isAiAvailable() {
@@ -2840,6 +3291,8 @@ void renderAppSelectScreen(bool force) {
     appLabel = "SNAKE";
   } else if (selectedAppIndex == APP_FLAPPY) {
     appLabel = "FLAPPY";
+  } else if (selectedAppIndex == APP_WOL) {
+    appLabel = "WOL";
   }
   const int appTextSize = 4;
   tft.setTextSize(appTextSize);
@@ -3668,6 +4121,7 @@ int nextAppIndex(int current) {
   apps.push_back(APP_WEATHER);
   apps.push_back(APP_SNAKE);
   apps.push_back(APP_FLAPPY);
+  apps.push_back(APP_WOL);
   int pos = 0;
   for (int i = 0; i < (int)apps.size(); i++) {
     if (apps[i] == current) {
@@ -3685,6 +4139,7 @@ void setup() {
   loadWifiConfig();
   loadModesConfig();
   loadSavedApp();
+  loadWolDevices();
   beginWifiSetup();
   loadSavedMode();
 
@@ -3783,6 +4238,10 @@ void loop() {
         screenState = SCREEN_FLAPPY;
         initFlappyGame();
         renderFlappyScreen(true);
+      } else if (selectedAppIndex == APP_WOL) {
+        screenState = SCREEN_WOL;
+        wolMenuIdx = 0; wolSubState = 0; wolSentMs = 0;
+        renderWolScreen(true);
       } else {
         screenState = SCREEN_START;
         lastInputMs = nowMs;
@@ -3939,6 +4398,102 @@ void loop() {
     }
     updateFlappyGame(nowMs);
     renderFlappyScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_WOL) {
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (leftPending && (nowMs - leftPendingMs) <= DOUBLE_TAP_MS) {
+        // Double-tap: exit to app select (or back from scan results to list)
+        leftPending = false;
+        if (wolSubState == 2) {
+          wolSubState = 0;
+          renderWolScreen(true);
+        } else {
+          screenState = SCREEN_APP_SELECT;
+          renderAppSelectScreen(true);
+        }
+        return;
+      }
+      leftPending = true;
+      leftPendingMs = nowMs;
+      // Single tap: navigate prev
+      if (wolSubState == 0) {
+        int total = (int)wolDevices.size() + 1;
+        wolMenuIdx = (wolMenuIdx - 1 + total) % total;
+        renderWolScreen(true);
+      } else if (wolSubState == 2 && !wolScanResults.empty()) {
+        wolScanResultIdx = (wolScanResultIdx - 1 + wolScanResults.size()) % wolScanResults.size();
+        renderWolScreen(true);
+      }
+    }
+    if (leftPending && (nowMs - leftPendingMs) > DOUBLE_TAP_MS) {
+      leftPending = false;
+    }
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (wolSubState == 0) {
+        int total = (int)wolDevices.size() + 1;
+        bool onScan = (wolMenuIdx == (int)wolDevices.size());
+        if (onScan) {
+          // Start scan
+          wolSubState = 1;
+          renderWolScreen(true);
+          runNetworkScan(wolScanResults);
+          // Update alreadySaved flags
+          for (auto& r : wolScanResults) {
+            r.alreadySaved = false;
+            for (const auto& d : wolDevices) {
+              String dm = d.mac; dm.toUpperCase();
+              String rm = r.mac; rm.toUpperCase();
+              if (dm == rm) { r.alreadySaved = true; break; }
+            }
+          }
+          wolSubState = 2;
+          wolScanResultIdx = 0;
+          renderWolScreen(true);
+        } else {
+          wolMenuIdx = (wolMenuIdx + 1) % total;
+          renderWolScreen(true);
+        }
+      } else if (wolSubState == 2 && !wolScanResults.empty()) {
+        wolScanResultIdx = (wolScanResultIdx + 1) % wolScanResults.size();
+        renderWolScreen(true);
+      }
+    }
+    if (rightEvent == BUTTON_EVENT_LONG) {
+      if (wolSubState == 0) {
+        // Wake selected saved device
+        bool onScan = (wolMenuIdx == (int)wolDevices.size());
+        if (!onScan && !wolDevices.empty()) {
+          sendWolPacket(wolDevices[wolMenuIdx].mac);
+          wolSentMs = millis();
+          renderWolScreen(true);
+        }
+      } else if (wolSubState == 2 && !wolScanResults.empty()) {
+        // Add scan result to saved list (if not already saved) + wake it
+        WolScanResult& r = wolScanResults[wolScanResultIdx];
+        if (!r.alreadySaved) {
+          WolDevice d;
+          d.name = r.ip; // use IP as default name, user can rename via web
+          d.mac = r.mac;
+          wolDevices.push_back(d);
+          saveWolDevices();
+          r.alreadySaved = true;
+        }
+        sendWolPacket(r.mac);
+        wolSubState = 0;
+        wolMenuIdx = 0;
+        wolSentMs = millis();
+        renderWolScreen(true);
+      }
+    }
+    // Clear SENT overlay when it expires
+    if (wolSentMs > 0 && (millis() - wolSentMs) >= 2000) {
+      wolSentMs = 0;
+      renderWolScreen(true);
+    }
     return;
   }
 
