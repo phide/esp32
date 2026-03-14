@@ -40,6 +40,7 @@ const char* PREFS_MODES_KEY = "modes_json";
 const char* PREFS_AI_HOST_KEY = "ai_host";
 const char* PREFS_AI_WIFI_KEY = "ai_wifi";
 const char* PREFS_AI_SYSTEM_KEY = "ai_system";
+const char* PREFS_AI_MODEL_KEY = "ai_model";
 const float WEATHER_LAT = 53.5737f;
 const float WEATHER_LON = 9.9001f;
 const uint32_t WEATHER_REFRESH_MS = 10UL * 60UL * 1000UL;
@@ -195,6 +196,7 @@ String clockColor = "";
 int clockSizeIndex = 1;
 String aiHost = "";
 String aiWifiSsid = "";
+String aiModel = "llama3.2:3b";
 String aiSystemMessage = "";
 String aiTypingText = "";
 String aiResponseText = "";
@@ -1391,7 +1393,25 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<input name='ai_host' placeholder='AI Host (e.g. http://192.168.178.200:11434)' value='";
         html += aiHost;
         html += "'>";
+        html += "<select id='mdlSel' name='ai_model'><option value='";
+        html += aiModel;
+        html += "'>";
+        html += aiModel;
+        html += "</option></select>";
         html += "<button class='btn save' type='submit'>Save</button></div>";
+        html += "<script>"
+                "fetch('/ai/models').then(r=>r.json()).then(list=>{"
+                "var sel=document.getElementById('mdlSel');"
+                "var cur=sel.value;"
+                "sel.innerHTML='';"
+                "list.forEach(function(m){"
+                "var o=document.createElement('option');"
+                "o.value=m;o.textContent=m;"
+                "if(m===cur)o.selected=true;"
+                "sel.appendChild(o);});"
+                "if(!list.includes(cur)&&list.length>0)sel.options[0].selected=true;"
+                "}).catch(function(){});"
+                "</script>";
         html += "<div class='muted' style='margin-top:6px'>AI app shows only on the selected Wi-Fi.</div>";
         html += "</form>";
         html += "<form method='post' action='/ai/system' style='margin-top:10px'>";
@@ -1454,16 +1474,53 @@ void updateWifiAndTime(uint32_t nowMs) {
       webServer.on("/ai/save", []() {
         String host = webServer.arg("ai_host");
         String wifi = webServer.arg("ai_wifi");
+        String model = webServer.arg("ai_model");
         host.trim();
         wifi.trim();
+        model.trim();
         aiHost = host;
         aiWifiSsid = wifi;
+        if (model.length() > 0) aiModel = model;
         saveWifiConfig();
         if (!isAiAvailable() && selectedAppIndex == APP_AI) {
           switchToApp(APP_POMODORO);
         }
         webServer.sendHeader("Location", "/ai");
         webServer.send(303);
+      });
+
+      webServer.on("/ai/models", []() {
+        String json = "[";
+        if (aiHost.length() > 0) {
+          String baseUrl = aiHost;
+          if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) baseUrl = "http://" + baseUrl;
+          if (!baseUrl.endsWith("/")) baseUrl += "/";
+          HTTPClient http;
+          http.begin(baseUrl + "api/tags");
+          http.setTimeout(5000);
+          int code = http.GET();
+          if (code == 200) {
+            String payload = http.getString();
+            DynamicJsonDocument doc(4096);
+            if (!deserializeJson(doc, payload)) {
+              JsonArray arr = doc["models"].as<JsonArray>();
+              bool first = true;
+              for (JsonObject m : arr) {
+                const char* n = m["name"] | "";
+                if (strlen(n) > 0) {
+                  if (!first) json += ",";
+                  json += "\"";
+                  json += n;
+                  json += "\"";
+                  first = false;
+                }
+              }
+            }
+          }
+          http.end();
+        }
+        json += "]";
+        webServer.send(200, "application/json", json);
       });
 
       webServer.on("/ai/system", []() {
@@ -1545,7 +1602,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         http.addHeader("Content-Type", "application/json");
         http.setTimeout(60000);
         StaticJsonDocument<1024> req;
-        req["model"] = "llama3.2:3b";
+        req["model"] = aiModel.c_str();
         req["stream"] = false;
         JsonArray messages = req.createNestedArray("messages");
         if (aiSystemMessage.length() > 0) {
@@ -2271,6 +2328,7 @@ void loadWifiConfig() {
   clockSizeIndex = prefs.getInt(PREFS_CLOCK_SIZE_KEY, 1);
   aiHost = prefs.getString(PREFS_AI_HOST_KEY, "");
   aiWifiSsid = prefs.getString(PREFS_AI_WIFI_KEY, "");
+  aiModel = prefs.getString(PREFS_AI_MODEL_KEY, "llama3.2:3b");
   aiSystemMessage = prefs.getString(PREFS_AI_SYSTEM_KEY, "");
   prefs.end();
 
@@ -2325,6 +2383,7 @@ void saveWifiConfig() {
   prefs.putInt(PREFS_CLOCK_SIZE_KEY, clockSizeIndex);
   prefs.putString(PREFS_AI_HOST_KEY, aiHost);
   prefs.putString(PREFS_AI_WIFI_KEY, aiWifiSsid);
+  prefs.putString(PREFS_AI_MODEL_KEY, aiModel);
   prefs.putString(PREFS_AI_SYSTEM_KEY, aiSystemMessage);
   prefs.end();
 }
