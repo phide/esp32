@@ -4922,8 +4922,8 @@ void initTronGame() {
   tronRows = tft.height() / TRON_CELL;
   if (tronCols * tronRows > TRON_MAX) { tronCols = 45; tronRows = 80; }
   for (int i = 0; i < tronCols * tronRows; i++) tronGrid[i] = 0;
-  tronX[0] = tronCols / 3;     tronY[0] = 6;            tronDir[0] = 2; // P1 (top) moves down
-  tronX[1] = tronCols * 2 / 3; tronY[1] = tronRows - 7; tronDir[1] = 0; // P2 (bottom) moves up
+  tronX[0] = tronCols * 2 / 3; tronY[0] = tronRows - 7; tronDir[0] = 0; // P1 (right/bottom) moves up
+  tronX[1] = tronCols / 3;     tronY[1] = 6;            tronDir[1] = 2; // P2 (left/top) moves down
   for (int p = 0; p < 2; p++) {
     tronTurn[p] = false;
     tronDead[p] = false;
