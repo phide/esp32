@@ -5030,6 +5030,13 @@ void setup() {
   loadWifiConfig();
   loadModesConfig();
   loadSavedApp();
+  // On reboot, don't resume into a game (they're awkward to exit) — fall back to Pomodoro.
+  // Non-game apps (Clock, Weather, AI, WoL) are still restored.
+  if (selectedAppIndex == APP_SNAKE || selectedAppIndex == APP_FLAPPY ||
+      selectedAppIndex == APP_TUG || selectedAppIndex == APP_DUEL ||
+      selectedAppIndex == APP_DFLAPPY || selectedAppIndex == APP_TRON) {
+    selectedAppIndex = APP_POMODORO;
+  }
   loadWolDevices();
   // Pi-hole disabled — clear any stored config and skip loading
   piholeHost = ""; piholeApiKey = "";
