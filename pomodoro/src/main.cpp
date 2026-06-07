@@ -94,7 +94,11 @@ enum ScreenState {
   SCREEN_SNAKE,
   SCREEN_FLAPPY,
   SCREEN_WOL,
-  SCREEN_PIHOLE
+  SCREEN_PIHOLE,
+  SCREEN_TUG,
+  SCREEN_DUEL,
+  SCREEN_DFLAPPY,
+  SCREEN_TRON
 };
 
 enum ButtonEvent {
@@ -151,6 +155,18 @@ void renderSnakeScreen(bool force);
 void initFlappyGame();
 void updateFlappyGame(uint32_t nowMs);
 void renderFlappyScreen(bool force);
+void initTugGame();
+void renderTugScreen(bool force);
+void initDuelGame();
+void updateDuelGame(uint32_t nowMs);
+void renderDuelScreen(bool force);
+void initDflappyGame();
+void updateDflappyGame(uint32_t nowMs);
+void renderDflappyScreen(bool force);
+void initTronGame();
+void updateTronGame(uint32_t nowMs);
+void renderTronScreen(bool force);
+void ensureRotation(int r);
 void renderWolScreen(bool force);
 void loadWolDevices();
 void saveWolDevices();
@@ -212,6 +228,10 @@ const int APP_SNAKE = 4;
 const int APP_FLAPPY = 5;
 const int APP_WOL = 6;
 const int APP_PIHOLE = 7;
+const int APP_TUG = 8;      // 2P: Tug of War
+const int APP_DUEL = 9;     // 2P: Quick Draw / reaction
+const int APP_DFLAPPY = 10; // 2P: Double Flappy race
+const int APP_TRON = 11;    // 2P: one-button Tron
 
 uint16_t colorFocus = 0;
 uint16_t colorShort = 0;
@@ -313,6 +333,54 @@ int flappyPrevGapX = 0;
 int flappyPrevGapY = 0;
 float flappyPrevY = 0.0f;
 bool flappyPrevValid = false;
+
+// --- 2-player games (left button = Player 1, right button = Player 2) ---
+// Tug of War
+int tugPos = 120;        // rope marker x, 0..240
+int tugPrevPos = 120;
+int tugWinner = 0;       // 0 none, 1 P1, 2 P2
+bool tugDirty = true;
+
+// Duel / Quick Draw
+int duelState = 0;       // 0 waiting, 1 go, 2 result
+uint32_t duelGoMs = 0;   // scheduled time the GO signal appears
+uint32_t duelGoShownMs = 0; // actual millis() when GO was shown
+int duelReactionMs = -1; // winner's reaction time in ms (-1 = none / false start)
+int duelWinner = 0;      // 0 none, 1 P1, 2 P2
+bool duelFalseStart = false;
+bool duelDirty = true;
+
+// Double Flappy (index 0 = P1 left column, 1 = P2 right column)
+float df2Y[2];
+float df2Vel[2];
+int df2GapX[2];          // gap x within the column
+int df2GapY[2];
+int df2Score[2];
+bool df2Dead[2];
+uint32_t df2LastMs = 0;
+bool df2Over = false;
+int df2Winner = 0;       // 0 none, 1 P1, 2 P2, 3 draw
+bool df2Dirty = true;
+float df2PrevY[2];
+int df2PrevGapX[2];
+int df2PrevGapY[2];
+bool df2PrevValid = false;
+
+// Tron (one-button light cycles) — grid of 3px cells, sized to current orientation
+const int TRON_CELL = 3;
+const int TRON_MAX = 80 * 45;   // max cells (fits either orientation)
+uint8_t tronGrid[TRON_MAX];
+int tronCols = 80;
+int tronRows = 45;
+int tronX[2], tronY[2];
+
+int gDisplayRotation = 1;       // 1 = landscape (default), 0 = portrait (2P games)
+int tronDir[2];          // 0 up, 1 right, 2 down, 3 left
+bool tronTurn[2];        // pending left-turn request
+bool tronDead[2];
+uint32_t tronLastMs = 0;
+bool tronOver = false;
+int tronWinner = 0;      // 0 none, 1 P1, 2 P2, 3 draw
 
 bool leftPending = false;
 uint32_t leftPendingMs = 0;
@@ -468,6 +536,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 "a.mode{padding:8px 10px;border-radius:10px;border:1px solid #2a3a54;text-decoration:none;color:var(--text);"
                 "text-align:center}"
                 "a.mode.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}"
+                "a.mode.disabled{opacity:.45;pointer-events:none}"
                 "textarea{background:#0f141a;border:1px solid #2a3a54;color:var(--text);border-radius:8px;"
                 "padding:8px 10px;width:100%;min-height:80px;resize:vertical}"
                 ".response{white-space:pre-wrap;background:#101722;border:1px solid #26344a;border-radius:10px;"
@@ -476,6 +545,7 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".tab{padding:8px 12px;border-radius:999px;border:1px solid #2a3a54;"
                 "background:#1d2736;color:var(--text);text-decoration:none;font-weight:700;font-size:13px}"
                 ".tab.active{background:var(--accent);border-color:#3f7ed1;color:#07111e}"
+                ".tab.disabled{opacity:.45;pointer-events:none}"
                 "</style></head><body><div class='wrap'>";
         html += "<div class='tabs'>";
         html += "<a class='tab";
@@ -484,11 +554,12 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='tab";
         if (selectedAppIndex == APP_CLOCK) html += " active";
         html += "' href='/apps?app=1'>Clock</a>";
-        if (isAiAvailable()) {
-          html += "<a class='tab";
-          if (selectedAppIndex == APP_AI) html += " active";
-          html += "' href='/apps?app=2'>AI</a>";
-        }
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_AI) html += " active";
+        if (!isAiAvailable()) html += " disabled";
+        html += "' href='";
+        html += (isAiAvailable() ? "/apps?app=2" : "#");
+        html += "'>AI</a>";
         html += "<a class='tab";
         if (selectedAppIndex == APP_WEATHER) html += " active";
         html += "' href='/apps?app=3'>Weather</a>";
@@ -498,6 +569,18 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<a class='tab";
         if (selectedAppIndex == APP_FLAPPY) html += " active";
         html += "' href='/apps?app=5'>Flappy</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_TUG) html += " active";
+        html += "' href='/apps?app=8'>Tug</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_DUEL) html += " active";
+        html += "' href='/apps?app=9'>Duel</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_DFLAPPY) html += " active";
+        html += "' href='/apps?app=10'>2Flappy</a>";
+        html += "<a class='tab";
+        if (selectedAppIndex == APP_TRON) html += " active";
+        html += "' href='/apps?app=11'>Tron</a>";
         html += "<a class='tab";
         if (selectedAppIndex == APP_WOL) html += " active";
         html += "' href='/apps?app=6'>WoL</a>";
@@ -536,11 +619,12 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "<a class='mode";
           if (selectedAppIndex == APP_CLOCK) html += " active";
           html += "' href='/apps?app=1'>Clock</a>";
-          if (isAiAvailable()) {
-            html += "<a class='mode";
-            if (selectedAppIndex == APP_AI) html += " active";
-            html += "' href='/apps?app=2'>AI</a>";
-          }
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_AI) html += " active";
+          if (!isAiAvailable()) html += " disabled";
+          html += "' href='";
+          html += (isAiAvailable() ? "/apps?app=2" : "#");
+          html += "'>AI</a>";
           html += "<a class='mode";
           if (selectedAppIndex == APP_WEATHER) html += " active";
           html += "' href='/apps?app=3'>Weather</a>";
@@ -550,6 +634,18 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += "<a class='mode";
           if (selectedAppIndex == APP_FLAPPY) html += " active";
           html += "' href='/apps?app=5'>Flappy</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_TUG) html += " active";
+          html += "' href='/apps?app=8'>Tug</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_DUEL) html += " active";
+          html += "' href='/apps?app=9'>Duel</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_DFLAPPY) html += " active";
+          html += "' href='/apps?app=10'>2Flappy</a>";
+          html += "<a class='mode";
+          if (selectedAppIndex == APP_TRON) html += " active";
+          html += "' href='/apps?app=11'>Tron</a>";
           html += "<a class='mode";
           if (selectedAppIndex == APP_WOL) html += " active";
           html += "' href='/apps?app=6'>WoL</a>";
@@ -607,6 +703,13 @@ void updateWifiAndTime(uint32_t nowMs) {
         } else if (selectedAppIndex == APP_FLAPPY) {
           html += "<div class='row' style='margin-top:6px'>";
           html += "<div class='stat'>Status</div><div class='big' id='statusText'>Flappy</div>";
+          html += "</div>";
+        } else if (selectedAppIndex == APP_TUG || selectedAppIndex == APP_DUEL ||
+                   selectedAppIndex == APP_DFLAPPY || selectedAppIndex == APP_TRON) {
+          html += "<div class='row' style='margin-top:6px'>";
+          html += "<div class='stat'>Status</div><div class='big' id='statusText'>";
+          html += labelForApp(selectedAppIndex);
+          html += "</div>";
           html += "</div>";
         }
         bool timerActive = (screenState == SCREEN_TIMER);
@@ -695,11 +798,17 @@ void updateWifiAndTime(uint32_t nowMs) {
           html += " · ";
           html += icon;
           html += "</div>";
-        } else if (selectedAppIndex == APP_SNAKE || selectedAppIndex == APP_FLAPPY) {
+        } else if (selectedAppIndex == APP_SNAKE || selectedAppIndex == APP_FLAPPY ||
+                   selectedAppIndex == APP_TUG || selectedAppIndex == APP_DUEL ||
+                   selectedAppIndex == APP_DFLAPPY || selectedAppIndex == APP_TRON) {
           html += "<div class='timerBox' id='gameLabel'>";
           html += labelForApp(selectedAppIndex);
           html += "</div>";
-          html += "<div class='timerSub' id='gameScore'>Score 0</div>";
+          bool twoP = (selectedAppIndex == APP_TUG || selectedAppIndex == APP_DUEL ||
+                       selectedAppIndex == APP_DFLAPPY || selectedAppIndex == APP_TRON);
+          html += "<div class='timerSub' id='gameScore'>";
+          html += (twoP ? "2 Players · play on device" : "Score 0");
+          html += "</div>";
         } else if (!aiActive) {
           char timeStr[6];
           const char* timerSub = "Remaining";
@@ -969,6 +1078,14 @@ void updateWifiAndTime(uint32_t nowMs) {
           doc["screen"] = "Snake";
         } else if (screenState == SCREEN_FLAPPY) {
           doc["screen"] = "Flappy";
+        } else if (screenState == SCREEN_TUG) {
+          doc["screen"] = "Tug of War";
+        } else if (screenState == SCREEN_DUEL) {
+          doc["screen"] = "Duel";
+        } else if (screenState == SCREEN_DFLAPPY) {
+          doc["screen"] = "Double Flappy";
+        } else if (screenState == SCREEN_TRON) {
+          doc["screen"] = "Tron";
         } else if (screenState == SCREEN_CLOCK) {
           doc["screen"] = "Clock";
         } else if (screenState == SCREEN_TIMER) {
@@ -1264,16 +1381,24 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}"
                 "a.btn{display:inline-block;text-align:center;padding:10px 12px;border-radius:10px;"
                 "border:1px solid #2a3a54;background:#1d2736;color:var(--text);text-decoration:none;font-weight:600}"
+                ".muted{color:var(--muted);font-size:12px}"
                 "</style></head><body><div class='wrap'>";
         html += "<div class='title'>Settings</div>";
         html += "<div class='card'><div class='row'>";
         html += "<a class='btn' href='/'>Back</a>";
+        html += "</div></div>";
+        html += "<div class='card'>";
+        html += "<div class='muted' style='margin-bottom:8px'>Apps</div>";
+        html += "<div class='row'>";
         html += "<a class='btn' href='/apps'>Apps</a>";
-        html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
+        html += "<a class='btn' href='/time'>Pomodoro</a>";
         html += "<a class='btn' href='/ai'>AI</a>";
         html += "<a class='btn' href='/wol'>Wake on LAN</a>";
-        html += "<a class='btn' href='/pihole'>Pi-hole</a>";
-        html += "<a class='btn' href='/time'>Time</a>";
+        html += "</div></div>";
+        html += "<div class='card'>";
+        html += "<div class='muted' style='margin-bottom:8px'>System</div>";
+        html += "<div class='row'>";
+        html += "<a class='btn' href='/wifi'>Wi-Fi</a>";
         html += "<a class='btn' href='/ntp'>Time Sync</a>";
         html += "</div></div>";
         html += "</div></body></html>";
@@ -1318,9 +1443,6 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<div class='title'>Apps</div>";
         html += "<div class='card'><div class='row'>";
         html += "<a class='pill' href='/'>Back</a>";
-        html += "<div class='pill'>Active: ";
-        html += currentWifiLabel();
-        html += "</div>";
         html += "</div></div>";
 
         html += "<div class='card'>";
@@ -1347,6 +1469,21 @@ void updateWifiAndTime(uint32_t nowMs) {
         html += "<option value='5'";
         if (selectedAppIndex == APP_FLAPPY) html += " selected";
         html += ">Flappy</option>";
+        html += "<option value='8'";
+        if (selectedAppIndex == APP_TUG) html += " selected";
+        html += ">Tug of War (2P)</option>";
+        html += "<option value='9'";
+        if (selectedAppIndex == APP_DUEL) html += " selected";
+        html += ">Duel (2P)</option>";
+        html += "<option value='10'";
+        if (selectedAppIndex == APP_DFLAPPY) html += " selected";
+        html += ">Double Flappy (2P)</option>";
+        html += "<option value='11'";
+        if (selectedAppIndex == APP_TRON) html += " selected";
+        html += ">Tron (2P)</option>";
+        html += "<option value='6'";
+        if (selectedAppIndex == APP_WOL) html += " selected";
+        html += ">WoL</option>";
         html += "</select>";
         html += "<button class='btn save' type='submit'>Open</button></div>";
         if (!aiAvail && aiWifiSsid.length() > 0) {
@@ -2033,7 +2170,7 @@ void updateWifiAndTime(uint32_t nowMs) {
         html.reserve(4096);
         html += "<!doctype html><html><head><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>Time Settings</title>"
+                "<title>Pomodoro</title>"
                 "<style>"
                 ":root{--bg:#0f141a;--card:#151c25;--text:#e6f0ff;--muted:#92a1b3;"
                 "--accent:#5aa7ff;--ok:#5bd693;--warn:#ffb84d;}"
@@ -2062,12 +2199,9 @@ void updateWifiAndTime(uint32_t nowMs) {
                 ".handle{cursor:grab;color:var(--muted);font-size:18px;user-select:none}"
                 ".spacer{flex:1}"
                 "</style></head><body><div class='wrap'>";
-        html += "<div class='title'>Time</div>";
+        html += "<div class='title'>Pomodoro</div>";
         html += "<div class='card'><div class='row'>";
         html += "<a class='pill' href='/'>Back</a>";
-        html += "<div class='pill'>Active: ";
-        html += currentWifiLabel();
-        html += "</div>";
         html += "</div></div>";
 
         html += "<div class='card'>";
@@ -2631,7 +2765,7 @@ void loadSavedApp() {
   prefs.begin(PREFS_NAMESPACE, true);
   int saved = prefs.getInt(PREFS_APP_KEY, 0);
   prefs.end();
-  if (saved < 0 || saved > APP_FLAPPY) {
+  if (saved < 0 || saved > APP_TRON || saved == APP_PIHOLE) {
     saved = 0;
   }
   selectedAppIndex = saved;
@@ -2644,10 +2778,11 @@ void saveSelectedApp() {
 }
 
 void switchToApp(int appIndex) {
+  ensureRotation(1);
   if (appIndex == APP_AI && !isAiAvailable()) {
     appIndex = APP_POMODORO;
   }
-  if (appIndex < 0 || appIndex > APP_PIHOLE) {
+  if (appIndex < 0 || appIndex > APP_TRON || appIndex == APP_PIHOLE) {
     appIndex = APP_POMODORO;
   }
   selectedAppIndex = appIndex;
@@ -2679,6 +2814,30 @@ void switchToApp(int appIndex) {
     screenState = SCREEN_FLAPPY;
     initFlappyGame();
     renderFlappyScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_TUG) {
+    screenState = SCREEN_TUG;
+    initTugGame();
+    renderTugScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_DUEL) {
+    screenState = SCREEN_DUEL;
+    initDuelGame();
+    renderDuelScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_DFLAPPY) {
+    screenState = SCREEN_DFLAPPY;
+    initDflappyGame();
+    renderDflappyScreen(true);
+    return;
+  }
+  if (selectedAppIndex == APP_TRON) {
+    screenState = SCREEN_TRON;
+    initTronGame();
+    renderTronScreen(true);
     return;
   }
   if (selectedAppIndex == APP_WOL) {
@@ -2884,6 +3043,10 @@ const char* labelForApp(int appIndex) {
   if (appIndex == APP_WEATHER) return "Weather";
   if (appIndex == APP_SNAKE) return "Snake";
   if (appIndex == APP_FLAPPY) return "Flappy";
+  if (appIndex == APP_TUG) return "Tug of War";
+  if (appIndex == APP_DUEL) return "Duel";
+  if (appIndex == APP_DFLAPPY) return "Double Flappy";
+  if (appIndex == APP_TRON) return "Tron";
   if (appIndex == APP_WOL) return "WoL";
   if (appIndex == APP_PIHOLE) return "Pi-hole";
   return (appIndex == APP_CLOCK) ? "Clock" : "Pomodoro";
@@ -3616,6 +3779,7 @@ void renderStartScreen(bool force, uint32_t nowMs) {
 }
 
 void renderAppSelectScreen(bool force) {
+  ensureRotation(1);
   if (!isAiAvailable() && selectedAppIndex == APP_AI) {
     selectedAppIndex = APP_POMODORO;
   }
@@ -3652,10 +3816,16 @@ void renderAppSelectScreen(bool force) {
     appLabel = "SNAKE";
   } else if (selectedAppIndex == APP_FLAPPY) {
     appLabel = "FLAPPY";
+  } else if (selectedAppIndex == APP_TUG) {
+    appLabel = "TUG";
+  } else if (selectedAppIndex == APP_DUEL) {
+    appLabel = "DUEL";
+  } else if (selectedAppIndex == APP_DFLAPPY) {
+    appLabel = "2FLAPPY";
+  } else if (selectedAppIndex == APP_TRON) {
+    appLabel = "TRON";
   } else if (selectedAppIndex == APP_WOL) {
     appLabel = "WOL";
-  } else if (selectedAppIndex == APP_PIHOLE) {
-    appLabel = "PI-HOLE";
   }
   const int appTextSize = 4;
   tft.setTextSize(appTextSize);
@@ -4474,6 +4644,359 @@ void renderFlappyScreen(bool force) {
   flappyDirty = false;
 }
 
+// ===================== 2-Player Games =====================
+// Shared helpers: P1 = left button, P2 = right button.
+// colorFocus = Player 1, colorShort = Player 2.
+// 2P games render in PORTRAIT (135x240) so the two buttons sit side by side at
+// the bottom (one per player); all other screens stay landscape.
+
+void ensureRotation(int r) {
+  if (gDisplayRotation != r) {
+    tft.setRotation(r);
+    gDisplayRotation = r;
+  }
+}
+
+// Portrait 2P layout: in the held position both buttons are at the BOTTOM —
+// Player 2 = LEFT button (label bottom-left), Player 1 = RIGHT button (label bottom-right).
+// Player colors: P1 = green (right button), P2 = blue (left button).
+static uint16_t p1Col() { return colorFocus; }
+static uint16_t p2Col() { return colorShort; }
+
+static void drawCenteredText(const char* text, int size, uint16_t color, int y) {
+  tft.setTextSize(size);
+  tft.setTextColor(color, TFT_BLACK);
+  int w = (int)strlen(text) * 6 * size;
+  int x = (tft.width() - w) / 2;
+  if (x < 0) x = 0;
+  tft.setCursor(x, y);
+  tft.print(text);
+}
+
+// ---------- Tug of War (vertical: P1 pulls up to the top goal, P2 down to the bottom) ----------
+void initTugGame() {
+  ensureRotation(0);
+  tugPos = tft.height() / 2;
+  tugPrevPos = tugPos;
+  tugWinner = 0;
+  tugDirty = true;
+}
+
+void renderTugScreen(bool force) {
+  if (!force && !tugDirty) {
+    return;
+  }
+  const int W = tft.width();
+  const int H = tft.height();
+  const int barX = 6;
+  const int barW = W - 12;
+  const int topGoal = 22;       // P1 goal
+  const int botGoal = H - 22;   // P2 goal
+  if (force) {
+    tft.fillScreen(TFT_BLACK);
+    tft.drawFastHLine(barX, topGoal, barW, colorMuted);
+    tft.drawFastHLine(barX, botGoal, barW, colorMuted);
+    tft.setTextSize(1);
+    tft.setTextColor(p2Col(), TFT_BLACK);     // P2 button = bottom-left
+    tft.setCursor(4, H - 12);
+    tft.print("P2");
+    tft.setTextColor(p1Col(), TFT_BLACK);     // P1 button = bottom-right
+    tft.setCursor(W - 16, H - 12);
+    tft.print("P1");
+  } else {
+    tft.fillRect(barX, tugPrevPos - 3, barW, 6, TFT_BLACK);
+    if (abs(tugPrevPos - topGoal) <= 3) tft.drawFastHLine(barX, topGoal, barW, colorMuted);
+    if (abs(tugPrevPos - botGoal) <= 3) tft.drawFastHLine(barX, botGoal, barW, colorMuted);
+  }
+  // marker bar (color = whoever's half it's in; top = P1)
+  uint16_t mc = (tugPos < H / 2) ? p1Col() : p2Col();
+  tft.fillRect(barX, tugPos - 3, barW, 6, mc);
+  tugPrevPos = tugPos;
+
+  if (tugWinner != 0) {
+    drawCenteredText(tugWinner == 1 ? "P1 WINS" : "P2 WINS", 2,
+                     tugWinner == 1 ? p1Col() : p2Col(), H / 2 - 8);
+    drawCenteredText("press to retry", 1, colorMuted, H / 2 + 12);
+  }
+  tugDirty = false;
+}
+
+// ---------- Duel / Quick Draw ----------
+void initDuelGame() {
+  ensureRotation(0);
+  duelState = 0;
+  duelWinner = 0;
+  duelFalseStart = false;
+  duelReactionMs = -1;
+  duelGoMs = millis() + (uint32_t)random(1500, 4200);
+  duelDirty = true;
+}
+
+void updateDuelGame(uint32_t nowMs) {
+  if (duelState == 0 && nowMs >= duelGoMs) {
+    duelState = 1;
+    duelGoShownMs = nowMs;
+    duelDirty = true;
+  }
+}
+
+void renderDuelScreen(bool force) {
+  if (!force && !duelDirty) {
+    return;
+  }
+  int H = tft.height();
+  tft.fillScreen(TFT_BLACK);
+  // button labels: P2 bottom-left (green), P1 bottom-right (blue)
+  tft.setTextSize(1);
+  tft.setTextColor(p2Col(), TFT_BLACK);
+  tft.setCursor(4, H - 11);
+  tft.print("P2");
+  tft.setTextColor(p1Col(), TFT_BLACK);
+  tft.setCursor(tft.width() - 16, H - 11);
+  tft.print("P1");
+  if (duelState == 0) {
+    drawCenteredText("WAIT", 4, colorMuted, H / 2 - 16);
+  } else if (duelState == 1) {
+    drawCenteredText("GO!", 5, tft.color565(255, 50, 50), H / 2 - 20);
+  } else {
+    uint16_t wc = duelWinner == 1 ? p1Col() : p2Col();
+    drawCenteredText(duelWinner == 1 ? "P1 WINS" : "P2 WINS", 2, wc, H / 2 - 20);
+    if (duelFalseStart) {
+      drawCenteredText("(false start)", 1, colorMuted, H - 40);
+    } else if (duelReactionMs >= 0) {
+      char buf[16];
+      snprintf(buf, sizeof(buf), "%d ms", duelReactionMs);
+      drawCenteredText(buf, 1, wc, H - 40);
+    }
+    drawCenteredText("press to retry", 1, colorMuted, H - 24);
+  }
+  duelDirty = false;
+}
+
+// ---------- Double Flappy (horizontal split: P1 top half, P2 bottom half) ----------
+static const int DF_PIPEW = 16;
+static const int DF_BIRDX = 30;          // bird x (same in both strips)
+
+static int dfMid() { return tft.height() / 2; }
+static int dfRegTop(int p) { return p == 0 ? 0 : dfMid() + 1; }
+static int dfRegBot(int p) { return p == 0 ? dfMid() - 1 : tft.height() - 1; }
+static int dfRegH(int p) { return dfRegBot(p) - dfRegTop(p) + 1; }
+static int dfGapH(int p) { return dfRegH(p) * 2 / 5; }   // ~40% of the strip
+
+void initDflappyGame() {
+  ensureRotation(0);
+  int W = tft.width();
+  for (int p = 0; p < 2; p++) {
+    df2Y[p] = dfRegH(p) / 2.0f;
+    df2Vel[p] = 0.0f;
+    df2GapX[p] = W;
+    df2GapY[p] = dfRegH(p) / 2 - dfGapH(p) / 2;
+    df2Score[p] = 0;
+    df2Dead[p] = false;
+    df2PrevY[p] = df2Y[p];
+    df2PrevGapX[p] = df2GapX[p];
+    df2PrevGapY[p] = df2GapY[p];
+  }
+  df2Over = false;
+  df2Winner = 0;
+  df2LastMs = millis();
+  df2PrevValid = false;
+  df2Dirty = true;
+}
+
+void updateDflappyGame(uint32_t nowMs) {
+  if (df2Over) return;
+  if (nowMs - df2LastMs < 40) return;
+  df2LastMs = nowMs;
+  int W = tft.width();
+  for (int p = 0; p < 2; p++) {
+    df2PrevY[p] = df2Y[p];
+    df2PrevGapX[p] = df2GapX[p];
+    df2PrevGapY[p] = df2GapY[p];
+  }
+  df2PrevValid = true;
+  for (int p = 0; p < 2; p++) {
+    if (df2Dead[p]) continue;
+    int regH = dfRegH(p);
+    int gapH = dfGapH(p);
+    df2Vel[p] += 0.32f;
+    df2Y[p] += df2Vel[p];
+    df2GapX[p] -= 2;
+    if (df2GapX[p] < -DF_PIPEW) {
+      df2GapX[p] = W + 6;
+      int minG = 4;
+      int maxG = regH - gapH - 4;
+      if (maxG < minG) maxG = minG;
+      df2GapY[p] = random(minG, maxG + 1);
+      df2Score[p] += 1;
+    }
+    int by = (int)df2Y[p];
+    const int br = 4;  // bird radius
+    if (by - br < 0 || by + br > regH) {
+      df2Dead[p] = true;
+    }
+    if (!df2Dead[p] && DF_BIRDX + br >= df2GapX[p] && DF_BIRDX - br <= df2GapX[p] + DF_PIPEW) {
+      if (by - br < df2GapY[p] || by + br > df2GapY[p] + gapH) {
+        df2Dead[p] = true;
+      }
+    }
+  }
+  if (df2Dead[0] || df2Dead[1]) {
+    df2Over = true;
+    if (df2Dead[0] && df2Dead[1]) {
+      // both crashed on the same step -> higher score wins
+      if (df2Score[0] > df2Score[1]) df2Winner = 1;
+      else if (df2Score[1] > df2Score[0]) df2Winner = 2;
+      else df2Winner = 3;
+    } else {
+      df2Winner = df2Dead[0] ? 2 : 1;  // last bird flying wins
+    }
+  }
+  df2Dirty = true;
+}
+
+static void dfDrawRegion(int p, bool force) {
+  int rt = dfRegTop(p);
+  int regH = dfRegH(p);
+  int gapH = dfGapH(p);
+  uint16_t col = (p == 0) ? p1Col() : p2Col();
+  if (!force && df2PrevValid) {
+    tft.fillRect(df2PrevGapX[p] - 1, rt, DF_PIPEW + 2, regH, TFT_BLACK);
+    int pby = rt + (int)df2PrevY[p];
+    tft.fillRect(DF_BIRDX - 6, pby - 6, 12, 12, TFT_BLACK);
+  }
+  int gy = df2GapY[p];
+  // pipes (vertical gap within the strip)
+  tft.fillRect(df2GapX[p], rt, DF_PIPEW, gy, colorMuted);
+  tft.fillRect(df2GapX[p], rt + gy + gapH, DF_PIPEW, regH - (gy + gapH), colorMuted);
+  // bird
+  int by = rt + (int)df2Y[p];
+  tft.fillCircle(DF_BIRDX, by, 4, col);
+}
+
+void renderDflappyScreen(bool force) {
+  if (!force && !df2Dirty) return;
+  int W = tft.width();
+  if (force) {
+    tft.fillScreen(TFT_BLACK);
+    tft.drawFastHLine(0, dfMid(), W, colorMuted);
+    tft.setTextSize(1);
+    tft.setTextColor(p1Col(), TFT_BLACK);
+    tft.setCursor(4, 3);
+    tft.print("P1");
+    tft.setTextColor(p2Col(), TFT_BLACK);
+    tft.setCursor(4, dfMid() + 4);
+    tft.print("P2");
+  }
+  dfDrawRegion(0, force);
+  dfDrawRegion(1, force);
+  // scores (top-right of each strip)
+  tft.setTextSize(1);
+  tft.fillRect(W - 28, 3, 24, 10, TFT_BLACK);
+  tft.setTextColor(p1Col(), TFT_BLACK);
+  tft.setCursor(W - 28, 3);
+  tft.print(df2Score[0]);
+  tft.fillRect(W - 28, dfMid() + 4, 24, 10, TFT_BLACK);
+  tft.setTextColor(p2Col(), TFT_BLACK);
+  tft.setCursor(W - 28, dfMid() + 4);
+  tft.print(df2Score[1]);
+
+  if (df2Over) {
+    const char* msg = df2Winner == 1 ? "P1 WINS" : (df2Winner == 2 ? "P2 WINS" : "DRAW");
+    uint16_t c = df2Winner == 1 ? p1Col() : (df2Winner == 2 ? p2Col() : colorMuted);
+    drawCenteredText(msg, 2, c, tft.height() / 2 - 8);
+    drawCenteredText("press to retry", 1, colorMuted, tft.height() / 2 + 10);
+  }
+  df2Dirty = false;
+}
+
+// ---------- Tron ----------
+static inline bool tronCellSet(int x, int y) {
+  if (x < 0 || y < 0 || x >= tronCols || y >= tronRows) return true; // walls
+  return tronGrid[y * tronCols + x] != 0;
+}
+
+void initTronGame() {
+  ensureRotation(0);
+  tronCols = tft.width() / TRON_CELL;
+  tronRows = tft.height() / TRON_CELL;
+  if (tronCols * tronRows > TRON_MAX) { tronCols = 45; tronRows = 80; }
+  for (int i = 0; i < tronCols * tronRows; i++) tronGrid[i] = 0;
+  tronX[0] = tronCols / 3;     tronY[0] = 6;            tronDir[0] = 2; // P1 (top) moves down
+  tronX[1] = tronCols * 2 / 3; tronY[1] = tronRows - 7; tronDir[1] = 0; // P2 (bottom) moves up
+  for (int p = 0; p < 2; p++) {
+    tronTurn[p] = false;
+    tronDead[p] = false;
+    tronGrid[tronY[p] * tronCols + tronX[p]] = (uint8_t)(p + 1);
+  }
+  tronOver = false;
+  tronWinner = 0;
+  tronLastMs = millis();
+}
+
+void updateTronGame(uint32_t nowMs) {
+  if (tronOver) return;
+  if (nowMs - tronLastMs < 95) return;
+  tronLastMs = nowMs;
+  int nx[2], ny[2];
+  for (int p = 0; p < 2; p++) {
+    if (tronDead[p]) continue;
+    if (tronTurn[p]) {               // one-button: turn left (CCW)
+      tronDir[p] = (tronDir[p] + 3) % 4;
+      tronTurn[p] = false;
+    }
+    nx[p] = tronX[p];
+    ny[p] = tronY[p];
+    if (tronDir[p] == 0) ny[p] -= 1;
+    else if (tronDir[p] == 1) nx[p] += 1;
+    else if (tronDir[p] == 2) ny[p] += 1;
+    else nx[p] -= 1;
+  }
+  // collision check (incl. head-on into same cell)
+  for (int p = 0; p < 2; p++) {
+    if (tronDead[p]) continue;
+    if (tronCellSet(nx[p], ny[p])) tronDead[p] = true;
+  }
+  if (!tronDead[0] && !tronDead[1] && nx[0] == nx[1] && ny[0] == ny[1]) {
+    tronDead[0] = true;
+    tronDead[1] = true;
+  }
+  for (int p = 0; p < 2; p++) {
+    if (tronDead[p]) continue;
+    tronX[p] = nx[p];
+    tronY[p] = ny[p];
+    tronGrid[ny[p] * tronCols + nx[p]] = (uint8_t)(p + 1);
+  }
+  if (tronDead[0] || tronDead[1]) {
+    tronOver = true;
+    if (tronDead[0] && tronDead[1]) tronWinner = 3;
+    else if (tronDead[0]) tronWinner = 2;
+    else tronWinner = 1;
+  }
+}
+
+void renderTronScreen(bool force) {
+  if (force) {
+    tft.fillScreen(TFT_BLACK);
+    tft.drawRect(0, 0, tft.width(), tft.height(), colorMuted);
+    for (int p = 0; p < 2; p++) {
+      uint16_t c = (p == 0) ? p1Col() : p2Col();
+      tft.fillRect(tronX[p] * TRON_CELL, tronY[p] * TRON_CELL, TRON_CELL, TRON_CELL, c);
+    }
+  } else {
+    for (int p = 0; p < 2; p++) {
+      if (tronDead[p]) continue;
+      uint16_t c = (p == 0) ? p1Col() : p2Col();
+      tft.fillRect(tronX[p] * TRON_CELL, tronY[p] * TRON_CELL, TRON_CELL, TRON_CELL, c);
+    }
+  }
+  if (tronOver) {
+    const char* msg = tronWinner == 1 ? "P1 WINS" : (tronWinner == 2 ? "P2 WINS" : "DRAW");
+    uint16_t c = tronWinner == 1 ? p1Col() : (tronWinner == 2 ? p2Col() : colorMuted);
+    drawCenteredText(msg, 2, c, tft.height() / 2 - 8);
+  }
+}
+
 int nextAppIndex(int current) {
   std::vector<int> apps;
   apps.push_back(APP_POMODORO);
@@ -4484,8 +5007,12 @@ int nextAppIndex(int current) {
   apps.push_back(APP_WEATHER);
   apps.push_back(APP_SNAKE);
   apps.push_back(APP_FLAPPY);
+  apps.push_back(APP_TUG);
+  apps.push_back(APP_DUEL);
+  apps.push_back(APP_DFLAPPY);
+  apps.push_back(APP_TRON);
   apps.push_back(APP_WOL);
-  apps.push_back(APP_PIHOLE);
+  // APP_PIHOLE disabled
   int pos = 0;
   for (int i = 0; i < (int)apps.size(); i++) {
     if (apps[i] == current) {
@@ -4504,7 +5031,12 @@ void setup() {
   loadModesConfig();
   loadSavedApp();
   loadWolDevices();
-  loadPiholeConfig();
+  // Pi-hole disabled — clear any stored config and skip loading
+  piholeHost = ""; piholeApiKey = "";
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.remove(PREFS_PIHOLE_HOST_KEY);
+  prefs.remove(PREFS_PIHOLE_KEY_KEY);
+  prefs.end();
   beginWifiSetup();
   loadSavedMode();
 
@@ -4542,6 +5074,22 @@ void setup() {
     screenState = SCREEN_FLAPPY;
     initFlappyGame();
     renderFlappyScreen(true);
+  } else if (selectedAppIndex == APP_TUG) {
+    screenState = SCREEN_TUG;
+    initTugGame();
+    renderTugScreen(true);
+  } else if (selectedAppIndex == APP_DUEL) {
+    screenState = SCREEN_DUEL;
+    initDuelGame();
+    renderDuelScreen(true);
+  } else if (selectedAppIndex == APP_DFLAPPY) {
+    screenState = SCREEN_DFLAPPY;
+    initDflappyGame();
+    renderDflappyScreen(true);
+  } else if (selectedAppIndex == APP_TRON) {
+    screenState = SCREEN_TRON;
+    initTronGame();
+    renderTronScreen(true);
   } else {
     screenState = SCREEN_START;
     renderStartScreen(true, lastInputMs);
@@ -4603,6 +5151,22 @@ void loop() {
         screenState = SCREEN_FLAPPY;
         initFlappyGame();
         renderFlappyScreen(true);
+      } else if (selectedAppIndex == APP_TUG) {
+        screenState = SCREEN_TUG;
+        initTugGame();
+        renderTugScreen(true);
+      } else if (selectedAppIndex == APP_DUEL) {
+        screenState = SCREEN_DUEL;
+        initDuelGame();
+        renderDuelScreen(true);
+      } else if (selectedAppIndex == APP_DFLAPPY) {
+        screenState = SCREEN_DFLAPPY;
+        initDflappyGame();
+        renderDflappyScreen(true);
+      } else if (selectedAppIndex == APP_TRON) {
+        screenState = SCREEN_TRON;
+        initTronGame();
+        renderTronScreen(true);
       } else if (selectedAppIndex == APP_WOL) {
         screenState = SCREEN_WOL;
         wolMenuIdx = 0; wolSubState = 0; wolSentMs = 0;
@@ -4769,6 +5333,131 @@ void loop() {
     }
     updateFlappyGame(nowMs);
     renderFlappyScreen(false);
+    return;
+  }
+
+  // 2P games: Player 1 = RIGHT button (top), Player 2 = LEFT button (bottom).
+  // Exit gesture stays on the left button (long-press then short within 1.5s).
+  if (screenState == SCREEN_TUG) {
+    static bool exitArmed = false;
+    static uint32_t exitArmedMs = 0;
+    leftPending = false;
+    int H = tft.height();
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);   // physical RIGHT = P1 (pulls up)
+    if (leftEvent == BUTTON_EVENT_LONG) { exitArmed = true; exitArmedMs = nowMs; }
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (exitArmed && (nowMs - exitArmedMs) < 1500) {
+        exitArmed = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      if (tugWinner != 0) { initTugGame(); renderTugScreen(true); }
+      else {
+        tugPos -= 6;
+        if (tugPos <= 22) { tugPos = 22; tugWinner = 1; }
+        tugDirty = true;
+        renderTugScreen(tugWinner != 0);
+      }
+    }
+    if (exitArmed && (nowMs - exitArmedMs) >= 1500) exitArmed = false;
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);  // physical LEFT = P2 (pulls down)
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (tugWinner != 0) { initTugGame(); renderTugScreen(true); }
+      else {
+        tugPos += 6;
+        if (tugPos >= H - 22) { tugPos = H - 22; tugWinner = 2; }
+        tugDirty = true;
+        renderTugScreen(tugWinner != 0);
+      }
+    }
+    return;
+  }
+
+  if (screenState == SCREEN_DUEL) {
+    static bool exitArmed = false;
+    static uint32_t exitArmedMs = 0;
+    leftPending = false;
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);    // physical RIGHT = P1
+    if (leftEvent == BUTTON_EVENT_LONG) { exitArmed = true; exitArmedMs = nowMs; }
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);  // physical LEFT = P2
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (exitArmed && (nowMs - exitArmedMs) < 1500) {
+        exitArmed = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      if (duelState == 2) { initDuelGame(); }
+      else if (duelState == 1) { duelWinner = 1; duelState = 2; duelFalseStart = false; duelReactionMs = (int)(nowMs - duelGoShownMs); }
+      else { duelWinner = 2; duelState = 2; duelFalseStart = true; } // P1 too early -> P2 wins
+      duelDirty = true;
+      renderDuelScreen(true);
+    }
+    if (exitArmed && (nowMs - exitArmedMs) >= 1500) exitArmed = false;
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (duelState == 2) { initDuelGame(); }
+      else if (duelState == 1) { duelWinner = 2; duelState = 2; duelFalseStart = false; duelReactionMs = (int)(nowMs - duelGoShownMs); }
+      else { duelWinner = 1; duelState = 2; duelFalseStart = true; } // P2 too early -> P1 wins
+      duelDirty = true;
+      renderDuelScreen(true);
+    }
+    updateDuelGame(nowMs);
+    renderDuelScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_DFLAPPY) {
+    static bool exitArmed = false;
+    static uint32_t exitArmedMs = 0;
+    leftPending = false;
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);    // physical RIGHT = P1 (top)
+    if (leftEvent == BUTTON_EVENT_LONG) { exitArmed = true; exitArmedMs = nowMs; }
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (exitArmed && (nowMs - exitArmedMs) < 1500) {
+        exitArmed = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      if (df2Over) { initDflappyGame(); renderDflappyScreen(true); }
+      else if (!df2Dead[0]) { df2Vel[0] = -3.4f; }
+    }
+    if (exitArmed && (nowMs - exitArmedMs) >= 1500) exitArmed = false;
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);  // physical LEFT = P2 (bottom)
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (df2Over) { initDflappyGame(); renderDflappyScreen(true); }
+      else if (!df2Dead[1]) { df2Vel[1] = -3.4f; }
+    }
+    updateDflappyGame(nowMs);
+    renderDflappyScreen(false);
+    return;
+  }
+
+  if (screenState == SCREEN_TRON) {
+    static bool exitArmed = false;
+    static uint32_t exitArmedMs = 0;
+    leftPending = false;
+    ButtonEvent leftEvent = updateButton(leftButton, nowMs);    // physical RIGHT = P1
+    if (leftEvent == BUTTON_EVENT_LONG) { exitArmed = true; exitArmedMs = nowMs; }
+    if (leftEvent == BUTTON_EVENT_SHORT) {
+      if (exitArmed && (nowMs - exitArmedMs) < 1500) {
+        exitArmed = false;
+        screenState = SCREEN_APP_SELECT;
+        renderAppSelectScreen(true);
+        return;
+      }
+      if (tronOver) { initTronGame(); renderTronScreen(true); }
+      else { tronTurn[0] = true; }
+    }
+    if (exitArmed && (nowMs - exitArmedMs) >= 1500) exitArmed = false;
+    ButtonEvent rightEvent = updateButton(rightButton, nowMs);  // physical LEFT = P2
+    if (rightEvent == BUTTON_EVENT_SHORT) {
+      if (tronOver) { initTronGame(); renderTronScreen(true); }
+      else { tronTurn[1] = true; }
+    }
+    updateTronGame(nowMs);
+    renderTronScreen(false);
     return;
   }
 
